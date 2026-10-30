@@ -680,7 +680,7 @@ async function viewPatient(m) {
       <div class="headbtns">${exportBtn('patient', `/api/patients/${id}/export`)}<button class="btn" id="edit">Modifier</button> ${p.archive_le ? '<button class="btn primary" id="unarchive">Désarchiver</button>' : '<button class="btn primary" id="newc">+ Nouvelle séance</button>'}</div></div>
     <div class="grid2">
       <div>
-      <div class="card" id="crcard"><div class="crhead"><h2>Compte-rendu</h2><div class="crmeta"><span id="cr-maj">${crMajHtml(p.compte_rendu_maj)}</span><span class="crst" id="cr-st"></span></div></div>
+      <div class="card" id="crcard"><div class="crhead"><h2>Compte-rendu</h2><div class="crmeta"><span id="cr-maj">${crMajHtml(p.compte_rendu_maj)}</span><span class="crst" id="cr-st"></span><button type="button" class="btn small" id="crhist">Historique</button></div></div>
         ${editorHtml(p.compte_rendu)}
         <p class="muted tiny" style="margin:8px 0 0">Texte libre, enregistré automatiquement : à compléter et à mettre à jour au fil du suivi.</p></div>
       <div class="card" style="margin-top:22px"><h2>Consultations</h2><div class="timeline" id="tl">
@@ -746,6 +746,7 @@ async function viewPatient(m) {
   };
   wireEditor(() => { crPending = $('#editor').innerHTML; crSt('Modifications…'); clearTimeout(crTimer); crTimer = setTimeout(crSave, 700); });
   exportHook = async () => { clearTimeout(crTimer); await crSave(); };
+  $('#crhist').onclick = async () => { clearTimeout(crTimer); await crSave(); historiqueNotes(id, () => render(), true); };
   window.addEventListener('hashchange', () => { clearTimeout(crTimer); crSave(); }, { once: true });
   window.addEventListener('beforeunload', () => { if (crPending !== null) fetch(`/api/patients/${id}/compte-rendu`, { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contenu: crPending }) }); }, { once: true });
   mountRessources($('#res-p'), 'patients', id, p.ressources);
@@ -1242,15 +1243,17 @@ function diffMots(avant, apres) {
   if (f) out.push(['=', a.slice(a.length - f).join('')]);
   return out;
 }
-async function historiqueNotes(id, apresRestauration) {
+// Paramètre « cr » : historique du compte-rendu d'un patient (sinon : notes d'une séance)
+async function historiqueNotes(id, apresRestauration, cr = false) {
   const root = $('#modal-root');
-  const [versions, cur] = await Promise.all([api('GET', `/api/consultations/${id}/versions`), api('GET', '/api/consultations/' + id)]);
-  const quand = v => new Date(v.enregistre_le).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const base = cr ? `/api/patients/${id}/compte-rendu/versions` : `/api/consultations/${id}/versions`;
+  const [versions, cur] = await Promise.all([api('GET', base), cr ? api('GET', '/api/patients/' + id).then(p => ({ contenu: p.compte_rendu })) : api('GET', '/api/consultations/' + id)]);
+  const quand = v => new Date(cr ? (v.maj_le || v.enregistre_le) : v.enregistre_le).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const close = () => root.innerHTML = '';
-  root.innerHTML = `<div class="overlay"><div class="modal histo"><h2>Historique des notes</h2>
+  root.innerHTML = `<div class="overlay"><div class="modal histo"><h2>${cr ? 'Historique du compte-rendu' : 'Historique des notes'}</h2>
     <p class="muted">Les anciennes versions du texte sont conservées automatiquement (environ toutes les 10 minutes de saisie, et dès qu’une grande partie du texte disparaît). Restaurer une version ne détruit rien : le texte actuel est lui aussi mis de côté.</p>
     ${versions.length ? `<div class="hlist">${versions.map(v => `<div class="hrow" data-v="${v.id}">
-        <div class="hmeta"><b>${esc(quand(v))}</b>${v.origine === 'avant-restauration' ? ' <span class="chip">avant une restauration</span>' : ''}<span class="muted"> · ${v.taille} caractères</span>
+        <div class="hmeta"><b>${esc(quand(v))}</b>${v.origine === 'avant-restauration' ? ' <span class="chip">avant une restauration</span>' : v.origine === 'avant-fusion' ? ' <span class="chip">avant une fusion de fiches</span>' : ''}<span class="muted"> · ${v.taille} caractères</span>
           <div class="muted hap">${esc(v.apercu)}${v.taille > 120 ? '…' : ''}</div></div>
         <div class="hbtn"><button type="button" class="btn small" data-cmp="${v.id}">Comparer</button></div></div>`).join('')}</div>`
       : '<p class="muted">Aucune ancienne version pour l’instant : elles apparaissent dès que le texte est modifié.</p>'}
@@ -1260,9 +1263,9 @@ async function historiqueNotes(id, apresRestauration) {
   root.querySelector('.overlay').addEventListener('mousedown', e => { if (e.target.classList.contains('overlay')) close(); });
   const vue = $('#hview');
   root.querySelectorAll('[data-cmp]').forEach(btn => btn.onclick = async () => {
-    const vid = btn.dataset.cmp, v = await api('GET', `/api/consultations/${id}/versions/${vid}`);
+    const vid = btn.dataset.cmp, v = await api('GET', `${base}/${vid}`);
     root.querySelectorAll('.hrow').forEach(r => r.classList.toggle('sel', r.dataset.v === vid));
-    const ancien = texteDeHtml(v.contenu), actuel = texteDeHtml(cur.contenu), diff = diffMots(ancien, actuel);
+    const ancien = texteDeHtml(v.contenu), actuel = texteDeHtml(cr ? await api('GET', '/api/patients/' + id).then(p => p.compte_rendu) : cur.contenu), diff = diffMots(ancien, actuel);
     const semblable = ancien === actuel;
     vue.innerHTML = `<div class="hcmp"><div class="hlegend">Version du ${esc(quand(v))} comparée au texte actuel — <del>rouge</del> : présent dans cette version, absent aujourd’hui ; <ins>vert</ins> : ajouté depuis.</div>
       ${semblable ? '<p class="muted">Le texte est identique (seule la mise en forme diffère).</p>' : `<div class="hdiff">${diff.map(([t, x]) => t === '=' ? esc(x) : t === '-' ? `<del>${esc(x)}</del>` : `<ins>${esc(x)}</ins>`).join('')}</div>`}
@@ -1270,7 +1273,7 @@ async function historiqueNotes(id, apresRestauration) {
       <div class="actions" style="justify-content:flex-start"><button type="button" class="btn primary" id="hrest">Restaurer cette version</button></div></div>`;
     $('#hrest').onclick = async () => {
       const ok = $('#hrest'); if (ok.disabled) return; ok.disabled = true;
-      try { await api('POST', `/api/consultations/${id}/versions/${vid}/restaurer`); close(); toast('Version restaurée — le texte précédent reste dans l’historique'); apresRestauration(); } catch { ok.disabled = false; }
+      try { await api('POST', `${base}/${vid}/restaurer`); close(); toast('Version restaurée — le texte précédent reste dans l’historique'); apresRestauration(); } catch { ok.disabled = false; }
     };
     vue.scrollIntoView({ block: 'nearest' });
   });

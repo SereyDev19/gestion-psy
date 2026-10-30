@@ -180,7 +180,17 @@ const MIGRATIONS = [
   // v11 : « compte-rendu » du patient : un texte riche unique, mis à jour au fil du suivi (date et heure UTC de la dernière mise à jour)
   `ALTER TABLE patients ADD COLUMN compte_rendu TEXT NOT NULL DEFAULT '';
    ALTER TABLE patients ADD COLUMN compte_rendu_maj TEXT;`,
-  // v12, v13… : ajouter ici, par exemple :
+  // v12 : historique du compte-rendu du patient (même principe que les notes de séance ; supprimé avec le patient, copié dans la corbeille avec lui)
+  `CREATE TABLE patient_cr_versions (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+     contenu TEXT NOT NULL,
+     maj_le TEXT,                                             -- date (UTC) à laquelle ce texte avait été rédigé
+     enregistre_le TEXT NOT NULL DEFAULT (datetime('now')),   -- heure UTC où il a été mis de côté
+     origine TEXT NOT NULL DEFAULT 'modification'             -- modification | avant-restauration | avant-fusion
+   );
+   CREATE INDEX idx_pcv ON patient_cr_versions(patient_id, id);`,
+  // v13, v14… : ajouter ici, par exemple :
   // `ALTER TABLE consultations ADD COLUMN lieu TEXT DEFAULT ''`,
 ];
 if (process.env.EXTRA_MIGRATION) MIGRATIONS.push(process.env.EXTRA_MIGRATION); // réservé aux tests
@@ -445,7 +455,7 @@ route('POST', '/api/patients/:id/fusion', ({ m, body }) => {
   const liensDe = pid => all('SELECT * FROM liens WHERE patient_id=? OR proche_id=?', pid, pid);
   const nbSeances = get('SELECT COUNT(*) n FROM consultations WHERE patient_id=?', idB).n;
   snapshot('avant-fusion');
-  const bundle = { patient: B, consultations: [], liens: liensDe(idB), orphelins: [] };
+  const bundle = { patient: B, consultations: [], liens: liensDe(idB), orphelins: [], versions_cr: all('SELECT * FROM patient_cr_versions WHERE patient_id=?', idB) };
   versCorbeille('patient', nomB, `Fusionné dans « ${nomA} » · ${plur(nbSeances, 'séance')} déplacée${nbSeances > 1 ? 's' : ''}`, bundle, () => {
     run('UPDATE consultations SET patient_id=? WHERE patient_id=?', idA, idB);
     run('UPDATE ressources SET patient_id=? WHERE patient_id=?', idA, idB);
@@ -463,7 +473,7 @@ route('POST', '/api/patients/:id/fusion', ({ m, body }) => {
     run('DELETE FROM doublons_ignores WHERE a=? OR b=?', idB, idB);
     run(`UPDATE patients SET ${['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'complement', 'notes'].map(k => k + '=?').join(',')}, archive_le=? WHERE id=?`,
       ...['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'complement', 'notes'].map(k => fin[k]), archive, idA);
-    if (crFin !== A.compte_rendu) run(`UPDATE patients SET compte_rendu=?, compte_rendu_maj=datetime('now') WHERE id=?`, crFin, idA);
+    if (crFin !== A.compte_rendu) { garderVersionCR(A, crFin, 'avant-fusion', true); run(`UPDATE patients SET compte_rendu=?, compte_rendu_maj=datetime('now') WHERE id=?`, crFin, idA); }
     run('DELETE FROM patients WHERE id=?', idB);
   });
   return { ok: true, patient: patientComplet(idA), seances_deplacees: nbSeances };
@@ -570,6 +580,7 @@ route('POST', '/api/patients/:id/supprimer', ({ m, body }) => {
     patient: get('SELECT * FROM patients WHERE id=?', id),
     consultations: all('SELECT * FROM consultations WHERE patient_id=?', id),
     versions: all('SELECT v.* FROM consultation_versions v JOIN consultations c ON c.id = v.consultation_id WHERE c.patient_id=?', id),
+    versions_cr: all('SELECT * FROM patient_cr_versions WHERE patient_id IN (' + [id, ...orphIds].map(() => '?').join(',') + ')', id, ...orphIds),
     liens: liensDe(id),
     orphelins: orphIds.map(o => ({ patient: get('SELECT * FROM patients WHERE id=?', o), liens: liensDe(o) })),
   };
@@ -640,12 +651,49 @@ route('GET', '/api/accueil', () => {
 
 // Compte-rendu du patient : texte riche unique ; la date et l'heure de dernière mise à jour ne changent que si le texte change réellement
 route('PUT', '/api/patients/:id/compte-rendu', ({ m, body }) => {
-  const cur = get('SELECT id, compte_rendu FROM patients WHERE id=?', m[1]);
+  const cur = get('SELECT id, compte_rendu, compte_rendu_maj FROM patients WHERE id=?', m[1]);
   if (!cur) throw httpErr(404, 'Patient introuvable');
   if (typeof body.contenu !== 'string') throw httpErr(400, 'Contenu invalide');
   const contenu = texteDe(body.contenu) ? body.contenu : '';          // « <p></p> » ou texte vide = rien
-  if (contenu !== cur.compte_rendu) run(`UPDATE patients SET compte_rendu=?, compte_rendu_maj=datetime('now') WHERE id=?`, contenu, cur.id);
+  if (contenu !== cur.compte_rendu) {
+    garderVersionCR(cur, contenu);
+    run(`UPDATE patients SET compte_rendu=?, compte_rendu_maj=datetime('now') WHERE id=?`, contenu, cur.id);
+  }
   return { ok: true, compte_rendu_maj: get('SELECT compte_rendu_maj FROM patients WHERE id=?', cur.id).compte_rendu_maj };
+});
+// Historique du compte-rendu : mêmes règles que les notes de séance (une version au plus toutes les VERSION_DELAI_MIN minutes,
+// toujours en cas de grosse suppression, avant une restauration ou une fusion)
+function garderVersionCR(cur, nouveau, origine = 'modification', forcer = false) {
+  const ancienTxt = texteDe(cur.compte_rendu);
+  if (!ancienTxt) return;
+  const der = get('SELECT contenu, enregistre_le FROM patient_cr_versions WHERE patient_id=? ORDER BY id DESC LIMIT 1', cur.id);
+  if (der && der.contenu === cur.compte_rendu) return;
+  const trop = der && (Date.now() - Date.parse(der.enregistre_le.replace(' ', 'T') + 'Z')) < VERSION_DELAI_MIN * 60000;
+  const grosseSuppression = ancienTxt.length >= 200 && texteDe(nouveau).length < ancienTxt.length / 2;
+  if (forcer || !trop || grosseSuppression)
+    run('INSERT INTO patient_cr_versions (patient_id, contenu, maj_le, origine) VALUES (?,?,?,?)', cur.id, cur.compte_rendu, cur.compte_rendu_maj || null, origine);
+}
+route('GET', '/api/patients/:id/compte-rendu/versions', ({ m }) => {
+  if (!get('SELECT 1 FROM patients WHERE id=?', m[1])) throw httpErr(404, 'Patient introuvable');
+  return all('SELECT id, enregistre_le, maj_le, origine, contenu FROM patient_cr_versions WHERE patient_id=? ORDER BY id DESC', m[1])
+    .map(v => { const t = texteDe(v.contenu); return { id: v.id, enregistre_le: String(v.enregistre_le).replace(' ', 'T') + 'Z', maj_le: v.maj_le ? String(v.maj_le).replace(' ', 'T') + 'Z' : null, origine: v.origine, taille: t.length, apercu: t.slice(0, 120) }; });
+});
+route('GET', '/api/patients/:id/compte-rendu/versions/:id', ({ m }) => {
+  const v = get('SELECT * FROM patient_cr_versions WHERE id=? AND patient_id=?', m[2], m[1]);
+  if (!v) throw httpErr(404, 'Version introuvable');
+  return { ...v, enregistre_le: String(v.enregistre_le).replace(' ', 'T') + 'Z', maj_le: v.maj_le ? String(v.maj_le).replace(' ', 'T') + 'Z' : null };
+});
+route('POST', '/api/patients/:id/compte-rendu/versions/:id/restaurer', ({ m }) => {
+  const cur = get('SELECT id, compte_rendu, compte_rendu_maj FROM patients WHERE id=?', m[1]);
+  const v = get('SELECT * FROM patient_cr_versions WHERE id=? AND patient_id=?', m[2], m[1]);
+  if (!cur || !v) throw httpErr(404, 'Version introuvable');
+  db.exec('BEGIN');
+  try {
+    garderVersionCR(cur, v.contenu, 'avant-restauration', true);                 // le texte actuel est mis de côté
+    run(`UPDATE patients SET compte_rendu=?, compte_rendu_maj=datetime('now') WHERE id=?`, v.contenu, cur.id);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return { ok: true, compte_rendu: v.contenu, compte_rendu_maj: get('SELECT compte_rendu_maj FROM patients WHERE id=?', cur.id).compte_rendu_maj };
 });
 
 route('GET', '/api/consultations/:id', ({ m }) => {
@@ -1040,6 +1088,7 @@ function restaurer(item) {
     d.consultations.forEach(c => inserer('consultations', c));
     (d.versions || []).forEach(v => inserer('consultation_versions', v, true));
     d.orphelins.forEach(o => { if (!existe(o.patient.id)) inserer('patients', o.patient); });
+    (d.versions_cr || []).forEach(v => { if (existe(v.patient_id)) inserer('patient_cr_versions', v, true); });
     relier(d.liens); d.orphelins.forEach(o => relier(o.liens));
     restaurerRessources();
     cible = '#/patient/' + d.patient.id;
@@ -1274,6 +1323,7 @@ const DOC_TABLES = {
   liens: 'Liens familiaux : patient_id = l’enfant / l’ado, proche_id = le parent / responsable, role = nature du lien.',
   ressources: 'Liens web joints à un patient (consultation_id vide) ou à une séance.',
   modeles: 'Modèles de page de séance (contenu en HTML).',
+  patient_cr_versions: 'Historique du compte-rendu des patients : anciennes versions du texte (HTML), de la plus ancienne à la plus récente (id croissant). Heures en UTC.',
   consultation_versions: 'Historique des notes de séance : anciennes versions du texte (HTML), de la plus ancienne à la plus récente (id croissant). Heure en UTC.',
   corbeille: 'Éléments supprimés, conservés 30 jours (donnees = copie JSON de l’élément).',
   corbeille_ressources: 'Liens web des éléments en corbeille.',
@@ -1318,6 +1368,7 @@ route('GET', '/api/export/complet', () => {
     '  patients.csv                  Tous les patients et proches (à ouvrir avec Excel).',
     '  seances.csv                   Toutes les séances avec leurs notes (à ouvrir avec Excel).',
     '  historique-notes.csv          Anciennes versions des notes de séance (texte brut), au cas où une correction serait à reprendre.',
+    '  historique-comptes-rendus.csv Anciennes versions des comptes-rendus des patients (texte brut).',
     '  donnees-completes.json        Copie intégrale et structurée (patients, liens, séances en HTML, historique des notes, ressources, modèles) pour un autre logiciel.',
     '  dossiers/                     Un fichier Word (.docx) et un fichier texte Markdown (.md) par patient : coordonnées, liens, séances et notes.',
     '  SCHEMA-BASE-DE-DONNEES.txt    Description de la base cabinet.db, pour la réutiliser ailleurs.', '',
@@ -1331,10 +1382,14 @@ route('GET', '/api/export/complet', () => {
   add('historique-notes.csv', X.csv(['Patient', 'Date de la séance', 'Version enregistrée le (UTC)', 'Origine', 'Texte'],
     all(`SELECT v.*, c.date, ${NOMC('p')} AS patient_nom FROM consultation_versions v JOIN consultations c ON c.id=v.consultation_id JOIN patients p ON p.id=c.patient_id ORDER BY c.date, v.id`)
       .map(v => [v.patient_nom, v.date, v.enregistre_le, v.origine, X.texteBrut(v.contenu)])));
+  add('historique-comptes-rendus.csv', X.csv(['Patient', 'Texte rédigé le (UTC)', 'Version mise de côté le (UTC)', 'Origine', 'Texte'],
+    all(`SELECT v.*, ${NOMC('p')} AS patient_nom FROM patient_cr_versions v JOIN patients p ON p.id=v.patient_id ORDER BY p.nom, p.prenom, v.id`)
+      .map(v => [v.patient_nom, v.maj_le || '', v.enregistre_le, v.origine, X.texteBrut(v.contenu)])));
   add('donnees-completes.json', JSON.stringify({ exporte_le: dateJ, application: nomCabinet(), version: require('./package.json').version,
     patients: all('SELECT * FROM patients ORDER BY id'), liens: all('SELECT * FROM liens ORDER BY id'),
     consultations: all('SELECT * FROM consultations ORDER BY id').map(c => ({ ...c, presents: JSON.parse(c.presents || '[]') })),
     historique_notes: all('SELECT * FROM consultation_versions ORDER BY id'),
+    historique_comptes_rendus: all('SELECT * FROM patient_cr_versions ORDER BY id'),
     ressources: all('SELECT * FROM ressources ORDER BY id'), modeles: all('SELECT * FROM modeles ORDER BY id') }, null, 1));
   const pris = new Set();
   for (const p of patients) {

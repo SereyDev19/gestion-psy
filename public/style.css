@@ -382,3 +382,11 @@ a.tile:hover { border-color: var(--line2); }
 :root[data-theme=dark] .hdiff ins { background: rgba(80,200,120,.28); }
 
 .badge.idn { background: transparent; border: 1px solid var(--line2); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ---------- Compte-rendu du patient ---------- */
+.crhead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.crhead h2 { margin: 0; }
+.crmeta { margin-left: auto; display: flex; gap: 12px; align-items: baseline; font-size: 13px; color: var(--muted); }
+.crst { min-width: 90px; text-align: right; }
+#crcard .editor { min-height: 140px; }
+#crcard .editor > p:only-child:empty::before, #crcard .editor > p:only-child:has(> br:only-child)::before { content: "Écrivez ici le compte-rendu du patient, à compléter au fil du suivi…"; color: var(--muted2); pointer-events: none; }

@@ -177,7 +177,10 @@ const MIGRATIONS = [
      origine TEXT NOT NULL DEFAULT 'modification'             -- modification | avant-restauration
    );
    CREATE INDEX idx_cv ON consultation_versions(consultation_id, id);`,
-  // v11, v12… : ajouter ici, par exemple :
+  // v11 : « compte-rendu » du patient : un texte riche unique, mis à jour au fil du suivi (date et heure UTC de la dernière mise à jour)
+  `ALTER TABLE patients ADD COLUMN compte_rendu TEXT NOT NULL DEFAULT '';
+   ALTER TABLE patients ADD COLUMN compte_rendu_maj TEXT;`,
+  // v12, v13… : ajouter ici, par exemple :
   // `ALTER TABLE consultations ADD COLUMN lieu TEXT DEFAULT ''`,
 ];
 if (process.env.EXTRA_MIGRATION) MIGRATIONS.push(process.env.EXTRA_MIGRATION); // réservé aux tests
@@ -234,7 +237,7 @@ function ageInfo(dn, now = new Date()) {
 // Sortie API : `nom` = nom affiché, `nom_famille` = nom de famille brut ; le tarif n'existe plus ici
 function patOut(p) {
   if (!p) return p;
-  const { tarif_defaut, ...r } = p;
+  const { tarif_defaut, compte_rendu, ...r } = p;
   return { ...r, nom_famille: r.nom, nom: `${(r.prenom || '').trim()} ${r.nom}`.trim(), ...ageInfo(r.date_naissance) };
 }
 // Format IMPOSÉ pour le téléphone et l'e-mail (champs facultatifs, mais s'ils sont remplis ils doivent être valides) :
@@ -435,6 +438,9 @@ route('POST', '/api/patients/:id/fusion', ({ m, body }) => {
   fin.statut = choix.statut ? val('statut') : (A.statut === 'proche' && B.statut !== 'proche' ? B.statut : A.statut);
   const nomB = `${B.prenom || ''} ${B.nom}`.trim(), nomA = `${A.prenom || ''} ${A.nom}`.trim();
   fin.notes = vide(B.notes) || B.notes === A.notes ? A.notes : vide(A.notes) ? B.notes : `${A.notes}\n\n— Notes de la fiche fusionnée « ${nomB} » —\n${B.notes}`;
+  const crVide = h => !texteDe(h);
+  const crFin = crVide(B.compte_rendu) || B.compte_rendu === A.compte_rendu ? A.compte_rendu
+    : crVide(A.compte_rendu) ? B.compte_rendu : `${A.compte_rendu}<p></p><p><b>— Compte-rendu de la fiche fusionnée « ${nomB.replace(/[<>&]/g, '')} » —</b></p>${B.compte_rendu}`;
   const archive = A.archive_le && B.archive_le ? A.archive_le : null;
   const liensDe = pid => all('SELECT * FROM liens WHERE patient_id=? OR proche_id=?', pid, pid);
   const nbSeances = get('SELECT COUNT(*) n FROM consultations WHERE patient_id=?', idB).n;
@@ -457,6 +463,7 @@ route('POST', '/api/patients/:id/fusion', ({ m, body }) => {
     run('DELETE FROM doublons_ignores WHERE a=? OR b=?', idB, idB);
     run(`UPDATE patients SET ${['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'complement', 'notes'].map(k => k + '=?').join(',')}, archive_le=? WHERE id=?`,
       ...['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'complement', 'notes'].map(k => fin[k]), archive, idA);
+    if (crFin !== A.compte_rendu) run(`UPDATE patients SET compte_rendu=?, compte_rendu_maj=datetime('now') WHERE id=?`, crFin, idA);
     run('DELETE FROM patients WHERE id=?', idB);
   });
   return { ok: true, patient: patientComplet(idA), seances_deplacees: nbSeances };
@@ -478,6 +485,7 @@ const patientComplet = id => {
   const row = get('SELECT * FROM patients WHERE id=?', id);
   if (!row) throw httpErr(404, 'Patient introuvable');
   const p = patOut(row);
+  p.compte_rendu = row.compte_rendu || '';
   // Une seule ligne dans « liens », lue des deux côtés : c'est la relation bidirectionnelle
   p.liens = all(`SELECT l.id AS lien_id, 'parent' AS sens, l.role, o.id AS autre_id, ${NOMC('o')} AS autre_nom, o.statut AS autre_statut, o.type AS autre_type
                    FROM liens l JOIN patients o ON o.id = l.proche_id WHERE l.patient_id = ?
@@ -533,6 +541,7 @@ function apercuSuppression(id) {
 route('GET', '/api/patients/:id/suppression', ({ m }) => apercuSuppression(Number(m[1])));
 
 const frDate = d => String(d).split('-').reverse().join('/');
+const frDateHeure = utc => utc ? new Date(String(utc).replace(' ', 'T') + 'Z').toLocaleString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 
 // Met de côté les fichiers d'un élément supprimé (avant leur suppression par cascade)
 const copierRessources = (corbeilleId, where, params) =>
@@ -627,6 +636,16 @@ route('GET', '/api/accueil', () => {
     suivis: get(`SELECT COUNT(*) n FROM patients WHERE statut='suivi en cours' AND archive_le IS NULL`).n,
     seances_mois: get(`SELECT COUNT(*) n FROM consultations WHERE statut='réalisée' AND substr(date,1,7)=?`, t.slice(0, 7)).n,
   };
+});
+
+// Compte-rendu du patient : texte riche unique ; la date et l'heure de dernière mise à jour ne changent que si le texte change réellement
+route('PUT', '/api/patients/:id/compte-rendu', ({ m, body }) => {
+  const cur = get('SELECT id, compte_rendu FROM patients WHERE id=?', m[1]);
+  if (!cur) throw httpErr(404, 'Patient introuvable');
+  if (typeof body.contenu !== 'string') throw httpErr(400, 'Contenu invalide');
+  const contenu = texteDe(body.contenu) ? body.contenu : '';          // « <p></p> » ou texte vide = rien
+  if (contenu !== cur.compte_rendu) run(`UPDATE patients SET compte_rendu=?, compte_rendu_maj=datetime('now') WHERE id=?`, contenu, cur.id);
+  return { ok: true, compte_rendu_maj: get('SELECT compte_rendu_maj FROM patients WHERE id=?', cur.id).compte_rendu_maj };
 });
 
 route('GET', '/api/consultations/:id', ({ m }) => {
@@ -856,7 +875,7 @@ const rechercher = q => {
   const MAX = 8;
   for (const p of all(`SELECT p.*, ${NOMC('p')} AS nomc FROM patients p ORDER BY (p.archive_le IS NOT NULL), p.nom COLLATE NOCASE`)) {
     if (res.patients.length >= MAX) break;
-    if (!tout(p.prenom, p.nom, p.email, p.telephone.replace(/[\s.-]/g, ''), p.telephone, p.contact, p.notes)) continue;
+    if (!tout(p.prenom, p.nom, p.email, p.telephone.replace(/[\s.-]/g, ''), p.telephone, p.contact, p.notes, texteDe(p.compte_rendu))) continue;
     res.patients.push({ id: p.id, titre: p.nomc, sous: [p.archive_le ? 'archivé' : p.statut === 'proche' ? 'proche' : '', ageInfo(p.date_naissance).age_texte, p.complement, p.telephone, p.email].filter(Boolean).join(' · ') });
   }
   for (const c of all(`SELECT c.id, c.date, c.heure, c.contenu, ${NOMC('p')} AS patient FROM consultations c JOIN patients p ON p.id = c.patient_id ORDER BY c.date DESC, c.heure DESC`)) {
@@ -912,14 +931,14 @@ const oui = b => b ? 'Oui' : 'Non';
 
 // Colonnes : [clé d'option | null (toujours), en-tête]. Les colonnes dont l'option est décochée disparaissent du CSV.
 const COL_PATIENT = [[null, 'Patient n°'], ['infos', 'Civilité'], ['infos', 'Nom'], ['infos', 'Prénom'], ['infos', 'Date de naissance'], ['infos', 'Âge'], [null, 'Type'], [null, 'Statut'], [null, 'Archivé le'],
-  ['infos', 'Téléphone'], ['infos', 'E-mail'], ['infos', 'Autres coordonnées'], ['infos', 'Notes pratiques'], ['liens', 'Parents / responsables'], ['liens', 'Enfants / ados']];
+  ['infos', 'Téléphone'], ['infos', 'E-mail'], ['infos', 'Autres coordonnées'], ['infos', 'Notes pratiques'], ['notes', 'Compte-rendu'], ['liens', 'Parents / responsables'], ['liens', 'Enfants / ados']];
 const COL_SEANCE = [[null, 'Séance n°'], [null, 'Date'], [null, 'Heure'], [null, 'Durée (min)'], [null, 'Mode'], [null, 'Statut de la séance'], ['finances', 'Tarif (€)'], ['finances', 'Payée'], ['finances', 'Mode de paiement'], ['finances', 'Facturé à'],
   [null, 'Personnes présentes'], ['notes', 'Contenu de la séance']];
 const gardees = (cols, o) => cols.map(([k]) => !k || o.inclure.has(k));
 const garder = (vals, garde) => vals.filter((_, i) => garde[i]);
 const enTetes = (cols, o) => garder(cols.map(c => c[1]), gardees(cols, o));
 const valsSeance = (c, anon = false) => [c.id, c.date, c.heure, c.duree, c.mode, c.statut, c.tarif, oui(c.paye), c.mode_paiement || '', anon ? (c.facture_a ? 'un tiers' : '') : c.facture_a || '', presentsTxt(c, anon), X.texteBrut(c.contenu)];
-const valsIdentite = (p, anon = false) => [p.id, p.civilite === 'M' ? 'M.' : p.civilite, p.nom_famille, p.prenom, p.date_naissance || '', p.age_texte || '', p.type, p.statut, p.archive_le || '', p.telephone, p.email, p.contact, p.notes,
+const valsIdentite = (p, anon = false) => [p.id, p.civilite === 'M' ? 'M.' : p.civilite, p.nom_famille, p.prenom, p.date_naissance || '', p.age_texte || '', p.type, p.statut, p.archive_le || '', p.telephone, p.email, p.contact, p.notes, X.texteBrut(p.compte_rendu || ''),
   (p.liens || []).filter(l => l.sens === 'parent').map(l => anon ? l.role : `${l.autre_nom} (${l.role})`).join(', '), (p.liens || []).filter(l => l.sens === 'enfant').map(l => anon ? `enfant / ado (${l.role})` : `${l.autre_nom} (${l.role})`).join(', ')];
 const resumeSeance = (c, o) => [c.mode, c.duree ? c.duree + ' min' : '', c.statut,
   ...(o.inclure.has('finances') ? [c.tarif ? `${c.tarif} €` : '', c.paye ? 'payée' + (c.mode_paiement ? ' (' + c.mode_paiement + ')' : '') : (c.statut === 'réalisée' ? 'à régler' : '')] : []),
@@ -944,6 +963,7 @@ function dossierPatient(p, o) {
     const acc = filtreSeances(p.accompagnements, o);
     if (acc.length) blocs.push({ k: 'h2', t: 'Séances en tant qu’accompagnant' }, { k: 'list', items: acc.map(c => `${frDate(c.date)} à ${c.heure} : accompagnait ${o.anonyme ? 'un autre patient' : c.pour_nom} (${c.statut})`) });
   }
+  if (o.inclure.has('notes') && texteDe(p.compte_rendu)) blocs.push({ k: 'h2', t: 'Compte-rendu' }, { k: 'meta', t: `Dernière mise à jour : ${frDateHeure(p.compte_rendu_maj) || 'date inconnue'}` }, { k: 'rich', html: p.compte_rendu });
   blocs.push({ k: 'h2', t: `Séances (${seances.length})` });
   if (!seances.length) blocs.push({ k: 'p', t: 'Aucune séance pour ces critères.' });
   for (const c of seances) blocs.push(...blocSeance(c, `Séance du ${frDate(c.date)} à ${c.heure}`, o));
@@ -1264,7 +1284,7 @@ const DOC_TABLES = {
 const DOC_COLS = {
   'patients.nom': 'nom de famille', 'patients.prenom': 'prénom', 'patients.civilite': 'M, Mme ou vide', 'patients.date_naissance': 'AAAA-MM-JJ',
   'patients.type': 'adulte ou mineur', 'patients.statut': 'suivi en cours, en pause, terminé ou proche', 'patients.archive_le': 'date d’archivage (vide = actif)',
-  'patients.complement': 'précision pour distinguer des homonymes', 'patients.contact': 'autres coordonnées (texte libre)', 'patients.notes': 'notes pratiques',
+  'patients.complement': 'précision pour distinguer des homonymes', 'patients.contact': 'autres coordonnées (texte libre)', 'patients.notes': 'notes pratiques', 'patients.compte_rendu': 'compte-rendu du patient (texte riche en HTML), mis à jour au fil du suivi', 'patients.compte_rendu_maj': 'date et heure (UTC) de la dernière mise à jour du compte-rendu',
   'consultations.patient_id': 'renvoie à patients.id', 'consultations.date': 'AAAA-MM-JJ', 'consultations.heure': 'HH:MM', 'consultations.duree': 'minutes',
   'consultations.mode': 'cabinet, visio, téléphone ou domicile', 'consultations.statut': 'planifiée, réalisée, absence ou annulée', 'consultations.tarif': 'euros',
   'consultations.paye': '0 = non, 1 = oui', 'consultations.mode_paiement': 'chèque, espèces, virement ou CB', 'consultations.facture_a': 'nom de la personne facturée',

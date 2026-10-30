@@ -87,6 +87,8 @@ async function api(method, url, body) {
 }
 const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2600); };
 
+// Date et heure (locales) de la dernière mise à jour du compte-rendu, enregistrées en UTC par le serveur
+const crMajHtml = v => v ? `Dernière mise à jour : <b>${esc(new Date(String(v).replace(' ', 'T') + 'Z').toLocaleString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }))}</b>` : 'Pas encore renseigné';
 const fmtDate = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const fmtOctets = n => n < 1024 ? n + ' o' : n < 1048576 ? (n / 1024).toFixed(n < 10240 ? 1 : 0).replace('.', ',') + ' Ko' : n < 1073741824 ? (n / 1048576).toFixed(1).replace('.', ',') + ' Mo' : (n / 1073741824).toFixed(2).replace('.', ',') + ' Go';
@@ -503,7 +505,7 @@ document.addEventListener('click', async e => {
 function exportModal(kind, base) {
   const STATUTS = ['planifiée', 'réalisée', 'absence', 'annulée'];
   const OPT = {
-    patient: [['infos', 'Identité et coordonnées du patient (nom, prénom, téléphone, e-mail, naissance…)'], ['liens', 'Liens familiaux'], ['ressources', 'Ressources (liens web)'], ['notes', 'Notes des séances'], ['finances', 'Tarifs et paiements']],
+    patient: [['infos', 'Identité et coordonnées du patient (nom, prénom, téléphone, e-mail, naissance…)'], ['liens', 'Liens familiaux'], ['ressources', 'Ressources (liens web)'], ['notes', 'Notes des séances et compte-rendu'], ['finances', 'Tarifs et paiements']],
     seance: [['infos', 'Nom du patient'], ['notes', 'Notes de la séance'], ['ressources', 'Ressources (liens web)'], ['finances', 'Tarifs et paiements']],
     patients: [['infos', 'Identité et coordonnées (nom, prénom, téléphone, e-mail, naissance…)'], ['liens', 'Liens familiaux'], ['finances', 'Montant restant à régler']],
     seances: [['infos', 'Nom du patient'], ['notes', 'Notes des séances'], ['finances', 'Tarifs et paiements']],
@@ -677,7 +679,11 @@ async function viewPatient(m) {
         ${p.age_texte ? ' · ' + esc(p.age_texte) : ''} · ${realisees.length} séance${realisees.length > 1 ? 's' : ''} réalisée${realisees.length > 1 ? 's' : ''}${du ? ` · <span style="color:var(--warn)">${euro(du)} à régler</span>` : ''}</div></div>
       <div class="headbtns">${exportBtn('patient', `/api/patients/${id}/export`)}<button class="btn" id="edit">Modifier</button> ${p.archive_le ? '<button class="btn primary" id="unarchive">Désarchiver</button>' : '<button class="btn primary" id="newc">+ Nouvelle séance</button>'}</div></div>
     <div class="grid2">
-      <div class="card"><h2>Consultations</h2><div class="timeline" id="tl">
+      <div>
+      <div class="card" id="crcard"><div class="crhead"><h2>Compte-rendu</h2><div class="crmeta"><span id="cr-maj">${crMajHtml(p.compte_rendu_maj)}</span><span class="crst" id="cr-st"></span></div></div>
+        ${editorHtml(p.compte_rendu)}
+        <p class="muted tiny" style="margin:8px 0 0">Texte libre, enregistré automatiquement : à compléter et à mettre à jour au fil du suivi.</p></div>
+      <div class="card" style="margin-top:22px"><h2>Consultations</h2><div class="timeline" id="tl">
         ${(() => {
           // Ses propres séances + celles où il / elle accompagnait quelqu'un d'autre (repérées par une pastille et une couleur), par ordre chronologique inverse
           const acc = (p.accompagnements || []).map(c => ({ ...c, acc: true }));
@@ -698,7 +704,7 @@ async function viewPatient(m) {
             <div class="badges">${c.statut === 'réalisée' && !c.paye ? '<span class="badge warn">À régler</span>' : ''}${statutBadge(c.statut)}</div>
           </div>`).join('');
         })()}
-      </div></div>
+      </div></div></div>
       <div>
         <div class="card" style="margin-bottom:18px"><h2>Informations</h2>
           <div class="field"><label>Téléphone</label>${p.telephone ? `<a href="tel:${esc(p.telephone.replace(/[^\d+]/g, ''))}">${esc(p.telephone)}</a>` : '<span class="muted">—</span>'}</div>
@@ -729,6 +735,19 @@ async function viewPatient(m) {
       </div>
     </div>`;
   $('#edit').onclick = () => patientModal(p);
+  // Compte-rendu : enregistrement automatique (comme les notes de séance) ; la date et l'heure de dernière mise à jour viennent du serveur
+  let crTimer, crPending = null;
+  const crSt = t => { const e = $('#cr-st'); if (e) e.textContent = t; };
+  const crSave = async () => {
+    const texte = crPending; crPending = null;
+    if (texte === null) return;
+    try { const r = await api('PUT', `/api/patients/${id}/compte-rendu`, { contenu: texte }); const m = $('#cr-maj'); if (m) m.innerHTML = crMajHtml(r.compte_rendu_maj); crSt('Enregistré'); }
+    catch { crSt('Erreur : non enregistré'); }
+  };
+  wireEditor(() => { crPending = $('#editor').innerHTML; crSt('Modifications…'); clearTimeout(crTimer); crTimer = setTimeout(crSave, 700); });
+  exportHook = async () => { clearTimeout(crTimer); await crSave(); };
+  window.addEventListener('hashchange', () => { clearTimeout(crTimer); crSave(); }, { once: true });
+  window.addEventListener('beforeunload', () => { if (crPending !== null) fetch(`/api/patients/${id}/compte-rendu`, { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contenu: crPending }) }); }, { once: true });
   mountRessources($('#res-p'), 'patients', id, p.ressources);
   document.querySelectorAll('#tl .item').forEach(i => i.onclick = e => { if (e.target.closest('[data-stop]')) return; location.hash = '#/consultation/' + i.dataset.id; });
   $('#pnotes').onchange = e => api('PUT', '/api/patients/' + id, { notes: e.target.value }).then(() => toast('Notes enregistrées'));

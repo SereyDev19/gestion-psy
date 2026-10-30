@@ -791,6 +791,10 @@ async function viewParametres() {
       <p style="margin-top:0">Version installée : <b>${esc(MAJ.version)}</b></p>
       ${MAJ.auto ? '<div class="btnrow"><button class="btn primary" id="majbtn">Rechercher une mise à jour</button></div><p class="muted tiny" id="majmsg" style="margin-bottom:0">Vérification automatique à chaque ouverture. Vos données ne sont jamais touchées.</p>'
         : '<p class="muted tiny" style="margin-bottom:0">Mise à jour automatique : application Windows installée uniquement. Sur Mac : <code>Mettre-a-jour-Mac.command</code>.</p>'}</div>
+    <div class="card pcard"><h2>Dossier des données</h2>
+      <p style="margin-top:0">Les patients et les séances sont enregistrés ici :<br><code>${esc(P.dossier_donnees)}</code></p>
+      ${P.dossier_modifiable ? '<div class="btnrow"><button class="btn" id="dirbtn">Changer le dossier…</button></div><p class="muted tiny" id="dirmsg" style="margin-bottom:0">Pour un volume chiffré (VeraCrypt), montez-le d’abord. Les données sont copiées dans le nouveau dossier, puis l’application redémarre. L’ancien dossier n’est pas effacé.</p>'
+        : '<p class="muted tiny" style="margin-bottom:0">Le changement de dossier se fait dans l’application de bureau (Windows/Mac).</p>'}</div>
     <div class="card pcard"><h2>Sauvegarde et export</h2>
       <p style="margin-top:0">Dernier export complet : <b>${P.dernier_export ? fmtDate(P.dernier_export) : 'jamais'}</b></p>
       <div class="btnrow"><a class="btn primary" href="/api/export/complet" id="expfull">Exporter toutes les données (zip)</a><a class="btn" href="/api/sauvegarde">Sauvegarder la base (cabinet.db)</a></div>
@@ -823,6 +827,14 @@ async function viewParametres() {
   if ($('#majbtn')) $('#majbtn').onclick = async () => {
     const b = $('#majbtn'); b.disabled = true; $('#majmsg').textContent = 'Vérification…';
     try { const r = await api('POST', '/api/mise-a-jour/verifier'); $('#majmsg').textContent = r.message || ''; } catch { $('#majmsg').textContent = 'Vérification impossible.'; }
+    b.disabled = false;
+  };
+  if ($('#dirbtn')) $('#dirbtn').onclick = async () => {
+    const b = $('#dirbtn'); b.disabled = true;
+    try {
+      const r = await api('POST', '/api/dossier-donnees/changer');
+      if (r.etat === 'redemarrage') { $('#dirmsg').textContent = 'Redémarrage de l’application…'; return; }
+    } catch (e) { $('#dirmsg').textContent = (e && e.message) || 'Changement impossible.'; }
     b.disabled = false;
   };
   if ($('#expfull')) $('#expfull').onclick = () => setTimeout(() => toast('Export en cours…'), 50);

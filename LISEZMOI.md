@@ -83,7 +83,7 @@ Le prototype peut être emballé en vraie application (fenêtre unique, sans nav
   - Si le dossier est introuvable au lancement (volume pas monté, disque débranché), l'appli **ne crée jamais de base vide en silence** : elle propose Réessayer / Choisir un autre dossier / Quitter.
   - Si le dossier existe mais ne contient plus la base, elle prévient avant de créer une base vide.
   - Si le dossier disparaît pendant l'utilisation, l'appli se ferme après un message. Fermer l'appli **avant** de démonter un volume.
-  - Menu **Aide > Changer le dossier des données…** : copie les données vers un nouveau dossier (ou reprend une base qui s'y trouve déjà) puis redémarre. L'ancien dossier n'est pas effacé : le supprimer soi-même une fois que tout fonctionne.
+  - **Paramètres > Dossier des données > Changer le dossier…** (ou menu **Aide > Changer le dossier des données…**) : copie les données vers un nouveau dossier (ou reprend une base qui s'y trouve déjà) puis redémarre. L'ancien dossier n'est pas effacé : le supprimer soi-même une fois que tout fonctionne.
   - Menu **Aide > Ouvrir le dossier des données**.
 - L'installateur Windows propose aussi de choisir le dossier d'installation du programme (distinct des données).
 - Au tout premier lancement, quelques patients fictifs sont créés (réglage `demoAuPremierLancement` dans `package.json`, à passer à `false` pour la version de Claire).

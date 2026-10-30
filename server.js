@@ -1114,7 +1114,7 @@ route('GET', '/api/parametres', () => {
   const jours = d => (Date.now() - new Date(String(d).replace(' ', 'T') + (String(d).length <= 10 ? 'T12:00:00' : 'Z')).getTime()) / 864e5;
   const rappel = !!premier && !(repousse && repousse > aujourdhui()) && (dernier ? jours(dernier) > 30 : jours(premier) > 7);
   return { nom_cabinet: nomCabinet(), nom_defaut: NOM_DEFAUT, dernier_export: dernier || null, rappel_export: rappel, protege: protege(), delai_min: delaiMin(),
-    dossier_donnees: DATA_DIR, version: require('./package.json').version };
+    dossier_donnees: DATA_DIR, dossier_modifiable: !!global.gestionPsyDossier, version: require('./package.json').version };
 });
 route('PUT', '/api/parametres', ({ body }) => {
   if (body.nom_cabinet !== undefined) {
@@ -1127,6 +1127,10 @@ route('PUT', '/api/parametres', ({ body }) => {
 route('POST', '/api/parametres/rappel-repousse', () => { setReglage('rappel_repousse', new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10)); return { ok: true }; });
 
 // Mise à jour de l'application (Windows installé) : le programme Electron enregistre global.gestionPsyMaj ; en mode web / Mac / développement, c'est indisponible.
+route('POST', '/api/dossier-donnees/changer', () => {
+  if (!global.gestionPsyDossier) throw httpErr(400, 'Disponible dans l’application de bureau uniquement.');
+  return { etat: global.gestionPsyDossier.changer() };
+});
 route('GET', '/api/mise-a-jour', () => ({ version: require('./package.json').version, auto: !!(global.gestionPsyMaj && global.gestionPsyMaj.actif) }));
 route('POST', '/api/mise-a-jour/verifier', async () => global.gestionPsyMaj ? global.gestionPsyMaj.verifier(true)
   : { etat: 'indisponible', message: 'La mise à jour automatique n’existe que dans l’application Windows installée.' });

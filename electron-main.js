@@ -102,22 +102,24 @@ function trouverDossier() {
 }
 
 // Menu Aide > Changer le dossier des données : la copie est faite au redémarrage suivant (base fermée, donc cohérente)
+// Renvoie 'annule' | 'identique' | 'redemarrage' (appelée aussi depuis Paramètres, via global.gestionPsyDossier)
 function changerDossier() {
   const p = choisirDossier('Nouveau dossier des données');
-  if (!p) return;
-  if (path.resolve(p) === path.resolve(dataDir)) { ui.boite({ message: 'C’est déjà le dossier utilisé.', buttons: ['OK'] }); return; }
+  if (!p) return 'annule';
+  if (path.resolve(p) === path.resolve(dataDir)) { ui.boite({ message: 'C’est déjà le dossier utilisé.', buttons: ['OK'] }); return 'identique'; }
   const existante = aUneBase(p);
   const r = ui.boite({ type: 'question', buttons: ['Continuer', 'Annuler'], defaultId: 0, cancelId: 1,
     message: existante ? 'Ce dossier contient déjà une base de données' : 'Déplacer les données ?',
     detail: existante
       ? `Gestion Psy utilisera telle quelle la base trouvée dans :\n${p}\n\nLa base actuelle (${dataDir}) n'est pas modifiée.`
       : `Vos données seront copiées dans :\n${p}\n\nGestion Psy redémarre ensuite. L'ancien dossier n'est PAS effacé : il contient encore les données des patients. Supprimez-le vous-même une fois que tout fonctionne.` });
-  if (r !== 0) return;
+  if (r !== 0) return 'annule';
   const cfg = lireConfig();
   if (existante) { cfg.dataDir = p; cfg.initialise = true; delete cfg.deplacement; }
   else cfg.deplacement = { de: dataDir, vers: p };
   ecrireConfig(cfg);
-  app.relaunch(); app.exit(0);
+  setTimeout(() => { app.relaunch(); app.exit(0); }, 600);   // laisse partir la réponse à la page Paramètres
+  return 'redemarrage';
 }
 
 // Si le dossier disparaît pendant l'utilisation (volume démonté de force, disque débranché) : on le dit et on ferme, plutôt que d'écrire dans le vide
@@ -168,6 +170,7 @@ async function demarrer() {
   if (t.cfg && !t.cfg.initialise) { t.cfg.initialise = true; ecrireConfig(t.cfg); }   // dès qu'une base existe, son absence future sera signalée
   surveillerDossier();
   global.gestionPsyMaj = require('./electron-maj.js')(() => fenetre);
+  global.gestionPsyDossier = { changer: changerDossier };
   const origine = `http://localhost:${port}`;
 
   // Rien n'est autorisé par défaut (caméra, micro, géolocalisation…)
@@ -203,7 +206,7 @@ async function demarrer() {
     { label: 'Aide', submenu: [
       { label: 'Dossier des données : ' + dataDir, enabled: false },
       { label: 'Ouvrir le dossier des données', click: () => shell.openPath(dataDir) },
-      { id: 'changer', label: 'Changer le dossier des données…', click: changerDossier },
+      { id: 'changer', label: 'Changer le dossier des données…', click: () => { changerDossier(); } },
       { type: 'separator' },
       { label: 'Rechercher une mise à jour…', click: async () => { const r = await global.gestionPsyMaj.verifier(true); if (r.etat !== 'installation' && r.etat !== 'reporte') dialog.showMessageBox(fenetre || undefined, { type: r.etat === 'erreur' ? 'warning' : 'info', message: 'Gestion Psy', detail: r.message }); } },
     ] },

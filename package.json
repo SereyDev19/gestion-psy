@@ -1,0 +1,90 @@
+{
+  "name": "cabinet-psy",
+  "version": "0.22.0",
+  "private": true,
+  "description": "Gestion locale patients / consultations",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "DEMO=1 node server.js",
+    "electron": "electron .",
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist:win": "electron-builder --win --x64 --publish never"
+  },
+  "main": "electron-main.js",
+  "author": "Gestion Psy",
+  "cabinet": {
+    "demoAuPremierLancement": true
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "fr.gestionpsy.app",
+    "productName": "Gestion Psy",
+    "copyright": "Cabinet",
+    "files": [
+      "electron-main.js",
+      "electron-maj.js",
+      "server.js",
+      "export.js",
+      "public/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "SereyDev19",
+        "repo": "gestion-psy",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "productName": "Gestion Psy",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SereyDev19/gestion-psy.git"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  }
+}

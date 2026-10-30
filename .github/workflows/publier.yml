@@ -1,0 +1,48 @@
+# Publier une version : poser une étiquette « vX.Y.Z » (égale à la version de package.json) construit l'installateur Windows
+# (et l'application Mac) sur de vraies machines, puis les publie dans « Releases ». L'appli Windows installée s'en sert pour se mettre à jour.
+name: Publier une version
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Vérifier que l'étiquette correspond à la version
+        shell: bash
+        run: |
+          V=$(node -p "require('./package.json').version")
+          if [ "v$V" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::L'étiquette $GITHUB_REF_NAME ne correspond pas à la version $V de package.json"; exit 1
+          fi
+      - run: npm ci
+      - name: Construire et publier l'installateur Windows
+        run: npx electron-builder --win --x64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  mac:
+    needs: windows            # la Release est créée par la première tâche ; celle-ci y ajoute l'application Mac
+    runs-on: macos-latest
+    continue-on-error: true   # l'appli Mac se fabrique aussi en local (Mettre-a-jour-Mac.command) : un échec ici ne bloque rien
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Construire et publier l'application Mac
+        run: npx electron-builder --mac --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

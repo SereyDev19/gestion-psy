@@ -1,0 +1,16 @@
+# Jamais de données de patients dans le dépôt
+data/
+*.db
+*.db-wal
+*.db-shm
+sauvegardes/
+exports/
+*.zip
+*.hc
+
+# Fabrication
+node_modules/
+dist/
+.DS_Store
+Thumbs.db
+.env

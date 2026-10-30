@@ -89,6 +89,7 @@ const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.hidden = 
 
 const fmtDate = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const fmtOctets = n => n < 1024 ? n + ' o' : n < 1048576 ? (n / 1024).toFixed(n < 10240 ? 1 : 0).replace('.', ',') + ' Ko' : n < 1073741824 ? (n / 1048576).toFixed(1).replace('.', ',') + ' Mo' : (n / 1073741824).toFixed(2).replace('.', ',') + ' Go';
 const euro = n => (Number(n) || 0).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
 // Aperçu texte : on ignore les titres de section du modèle et on espace les blocs
 const strip = html => { const d = document.createElement('div'); d.innerHTML = html || ''; d.querySelectorAll('h3').forEach(h => h.remove());
@@ -215,6 +216,7 @@ function wireEditor(onChange) {
 
 // ---------- Routeur ----------
 const routes = [
+  [/^#\/accueil$/, viewAccueil],
   [/^#\/patients$/, viewPatients],
   [/^#\/patient\/(\d+)$/, viewPatient],
   [/^#\/consultations$/, viewConsultations],
@@ -226,13 +228,13 @@ const routes = [
 ];
 async function render() {
   if (auth.verrouille) return;
-  const h = location.hash || '#/patients';
+  const h = location.hash || '#/accueil';
   for (const [re, fn] of routes) {
     const m = h.match(re);
     if (m) {
       const nav = h.split('/')[1].replace(/s$/, '');
       document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav.replace(/s$/, '') === (nav === 'patient' ? 'patient' : nav)));
-      refreshTrash();
+      refreshTrash(); refreshJour();
       exportHook = null;
       try { HOMO = new Set(await (await fetch('/api/homonymes')).json()); } catch { HOMO = new Set(); }
       try { await fn(m); } catch (e) { app.innerHTML = `<div class="empty">Erreur : ${esc(e.message)}</div>`; }
@@ -383,6 +385,9 @@ async function newConsultationModal(patient, defaults = {}) {
     <div class="field"><label>Heure</label><input name="heure" type="time" value="${esc(defaults.heure || '14:00')}"></div>
     <div class="field"><label>Tarif (€)</label><input name="tarif" type="number" min="0" step="1" required value="${esc(suggere(patient ? patient.id : null))}"></div></div>
     <div class="field"><label>Modèle de séance</label><select name="modele"><option value="">Page vide</option>${modeles.map(t => `<option value="${t.id}">${esc(t.nom)}</option>`).join('')}</select></div>
+    <div class="field"><label>Répétition</label><div class="repbox"><select name="rep"><option value="0">Une seule séance</option><option value="7">Chaque semaine</option><option value="14">Toutes les 2 semaines</option></select>
+      <input name="repn" type="number" min="2" max="52" value="10" aria-label="Nombre total de séances" hidden></div>
+      <div class="muted tiny" id="repinfo" style="margin-top:4px"></div></div>
     <div id="cflbox"></div>`,
     async fd => {
       const pid = patient ? patient.id : Number(fd.get('patient'));
@@ -391,22 +396,32 @@ async function newConsultationModal(patient, defaults = {}) {
       const t = modeles.find(x => String(x.id) === fd.get('modele'));
       let c;
       try {
-        c = await api('POST', '/api/consultations', { patient_id: pid, date: fd.get('date'), heure: fd.get('heure'), tarif: Number(fd.get('tarif')) || 0, contenu: t ? t.contenu : '', presents: ['patient'], ...(forcer ? { confirme_doublon: true } : {}) });
+        c = await api('POST', '/api/consultations', { patient_id: pid, date: fd.get('date'), heure: fd.get('heure'), tarif: Number(fd.get('tarif')) || 0, contenu: t ? t.contenu : '', presents: ['patient'], ...(Number(fd.get('rep')) ? { repetition: { pas_jours: Number(fd.get('rep')), nombre: Number(fd.get('repn')) } } : {}), ...(forcer ? { confirme_doublon: true } : {}) });
       } catch (e) {
         if (!(e.data && e.data.conflits)) throw e;
         // Séance déjà prévue à ce moment : on l'indique et le bouton devient « Créer quand même »
         forcer = true;
         $('#cflbox').innerHTML = `<div class="dbl fort" role="alert"><div class="dbl-t">⚠ Vérifiez l’horaire</div>${e.data.conflits.map(x => `<div class="dbl-c"><div>
-          <a href="#/consultation/${x.id}" target="_blank" rel="noopener" class="name">${esc(x.patient_nom)}</a> <span class="muted tiny">${esc(x.heure || 'sans heure')}</span>
+          <a href="#/consultation/${x.id}" target="_blank" rel="noopener" class="name">${esc(x.patient_nom)}</a> <span class="muted tiny">${x.date ? esc(fmtDate(x.date)) + ' · ' : ''}${esc(x.heure || 'sans heure')}</span>
           <div class="dbl-r tiny">${x.type === 'meme' ? 'Ce patient a déjà une séance ce jour-là (doublon ?)' : 'Cette séance chevauche l’horaire d’un autre patient'}</div></div></div>`).join('')}
           <div class="muted tiny">Modifiez la date ou l’heure, ou créez la séance quand même.</div></div>`;
         $('.modal button.primary').textContent = 'Créer quand même';
         throw e;
       }
+      if (c.creees) { agenda.vue = 'calendrier'; agenda.mode = 'semaine'; agenda.ref = fd.get('date'); toast(`${c.creees} séances créées`); if (location.hash === '#/consultations') render(); else location.hash = '#/consultations'; return; }
       location.hash = '#/consultation/' + c.id;
     }, 'Créer');
   let forcer = false;
-  ['date', 'heure'].forEach(n => $(`[name=${n}]`).addEventListener('input', () => { if (forcer) { forcer = false; $('#cflbox').innerHTML = ''; $('.modal button.primary').textContent = 'Créer'; } }));
+  const majRep = () => {
+    const pas = Number($('[name=rep]').value), n = Math.max(2, Math.min(52, Math.round(Number($('[name=repn]').value)) || 2)), d0 = $('[name=date]').value;
+    $('[name=repn]').hidden = !pas;
+    if (!pas || !d0) { $('#repinfo').textContent = ''; return; }
+    const d1 = new Date(d0 + 'T12:00:00'); d1.setDate(d1.getDate() + (n - 1) * pas);
+    const f = d => d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' });
+    $('#repinfo').textContent = `${n} séances au total, du ${f(new Date(d0 + 'T12:00:00'))} au ${f(d1)}.`;
+  };
+  ['rep', 'repn', 'date'].forEach(n => $(`[name=${n}]`).addEventListener('input', majRep));
+  ['date', 'heure', 'rep', 'repn'].forEach(n => $(`[name=${n}]`).addEventListener('input', () => { if (forcer) { forcer = false; $('#cflbox').innerHTML = ''; $('.modal button.primary').textContent = 'Créer'; } }));
   // Dans l'onglet Consultations : le patient se choisit dans une fenêtre de recherche ; le tarif suit ce choix tant qu'on ne l'a pas modifié à la main
   if (!patient) {
     const hid = $('input[name=patient]'), tar = $('input[name=tarif]'), lbl = $('#picklbl'); let touched = false;
@@ -583,7 +598,7 @@ async function viewPatients() {
           <div class="muted">${p.derniere ? fmtDate(p.derniere) : '—'}</div>
           <div>${p.prochaine ? fmtDate(p.prochaine) : '<span class="muted">—</span>'}</div>
           <div class="badges">${p.impayees ? `<span class="badge warn">${p.impayees} à régler</span>` : ''}${etatBadge(p)}</div></div>`).join('')
-      : `<div class="empty">Aucun patient ici pour le moment.</div>`;
+      : `<div class="empty"><div class="empty-t">Aucun patient pour le moment</div>Ajoutez votre premier patient avec le bouton « + Nouveau patient ».</div>`;
     document.querySelectorAll('#list .row[data-id]').forEach(r => r.onclick = () => location.hash = '#/patient/' + r.dataset.id);
     document.querySelectorAll('#chips .chip').forEach(c => c.onclick = () => { filtre = c.dataset.f; draw(); });
   };
@@ -663,7 +678,7 @@ async function viewPatient(m) {
           // Ses propres séances + celles où il / elle accompagnait quelqu'un d'autre (repérées par une pastille et une couleur), par ordre chronologique inverse
           const acc = (p.accompagnements || []).map(c => ({ ...c, acc: true }));
           const tout = [...p.consultations, ...acc].sort((x, y) => (y.date + y.heure).localeCompare(x.date + x.heure));
-          if (!tout.length) return '<div class="empty">Aucune consultation pour l’instant.</div>';
+          if (!tout.length) return '<div class="empty"><div class="empty-t">Aucune séance pour l’instant</div>Utilisez « + Nouvelle séance » pour planifier la première.</div>';
           return (acc.length ? `<div class="acclegend"><span class="badge acc">Accompagnant</span> séance faite pour une autre personne : ${esc(p.prenom || p.nom)} était présent(e) mais n’était pas le patient.</div>` : '')
             + tout.map(c => c.acc ? `
           <div class="item acc" data-id="${c.id}" title="Séance de ${esc(c.pour_nom)} : ${esc(p.nom)} accompagnait">
@@ -769,7 +784,7 @@ function afficherCle(cle) {
     <label class="check"><input type="checkbox" required> J’ai noté cette clé en lieu sûr</label>`, async () => {}, 'C’est noté');
 }
 async function viewParametres() {
-  const [P, MAJ] = await Promise.all([api('GET', '/api/parametres'), api('GET', '/api/mise-a-jour')]);
+  const [P, MAJ, SV] = await Promise.all([api('GET', '/api/parametres'), api('GET', '/api/mise-a-jour'), api('GET', '/api/sauvegardes')]);
   auth.protege = P.protege; auth.delai = P.delai_min; majBoutonVerrou();
   const mdpChamps = (actuel, nouveau) => `${actuel ? '<div class="field"><label>Mot de passe actuel</label><input type="password" name="actuel" autocomplete="current-password" required></div>' : ''}
     ${nouveau ? `<div class="field"><label>Nouveau mot de passe <span class="muted tiny">(8 caractères minimum)</span></label><input type="password" name="mdp" minlength="8" autocomplete="new-password" required></div>
@@ -795,6 +810,17 @@ async function viewParametres() {
       <p style="margin-top:0">Les patients et les séances sont enregistrés ici :<br><code>${esc(P.dossier_donnees)}</code></p>
       ${P.dossier_modifiable ? '<div class="btnrow"><button class="btn" id="dirbtn">Changer le dossier…</button></div><p class="muted tiny" id="dirmsg" style="margin-bottom:0">Pour un volume chiffré (VeraCrypt), montez-le d’abord. Les données sont copiées dans le nouveau dossier, puis l’application redémarre. L’ancien dossier n’est pas effacé.</p>'
         : '<p class="muted tiny" style="margin-bottom:0">Le changement de dossier se fait dans l’application de bureau (Windows/Mac).</p>'}</div>
+    <div class="card pcard"><h2>Affichage</h2>
+      <div class="fields"><div class="field"><label>Taille du texte</label><select id="aff-taille">${[['100', 'Normale'], ['115', 'Grande'], ['130', 'Très grande']].map(([v, l]) => `<option value="${v}" ${GP.taille() === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        <div class="field"><label>Thème</label><select id="aff-theme">${[['auto', 'Automatique (comme l’ordinateur)'], ['clair', 'Clair'], ['sombre', 'Sombre']].map(([v, l]) => `<option value="${v}" ${GP.theme() === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
+      <p class="muted tiny" style="margin-bottom:0">Réglages propres à cet ordinateur.</p></div>
+    <div class="card pcard"><h2>Sauvegardes automatiques</h2>
+      <p style="margin-top:0">Une sauvegarde de la base est faite <b>chaque jour</b> à l’ouverture de l’application, dans le sous-dossier « sauvegardes » du dossier des données. Les 30 plus récentes sont conservées.</p>
+      <dl class="statline"><dt>Base de données</dt><dd>${fmtOctets(SV.base)}</dd>
+        <dt>Sauvegardes conservées</dt><dd>${SV.nombre} · ${fmtOctets(SV.taille)}</dd>
+        <dt>Dernière sauvegarde automatique</dt><dd>${SV.derniere_auto ? esc(new Date(SV.derniere_auto).toLocaleString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })) : 'aucune pour l’instant'}</dd></dl>
+      ${SV.nombre > 7 ? '<div class="btnrow"><button class="btn" id="svpurge">Ne garder que les 7 plus récentes</button></div>' : ''}
+      <p class="muted tiny" id="svmsg" style="margin-bottom:0">Ces sauvegardes sont dans le même dossier que les données : elles ne protègent pas d’une panne du disque. Copiez régulièrement le conteneur chiffré sur un support externe.</p></div>
     <div class="card pcard"><h2>Sauvegarde et export</h2>
       <p style="margin-top:0">Dernier export complet : <b>${P.dernier_export ? fmtDate(P.dernier_export) : 'jamais'}</b></p>
       <div class="btnrow"><a class="btn primary" href="/api/export/complet" id="expfull">Exporter toutes les données (zip)</a><a class="btn" href="/api/sauvegarde">Sauvegarder la base (cabinet.db)</a></div>
@@ -838,6 +864,10 @@ async function viewParametres() {
     } catch (e) { $('#dirmsg').textContent = (e && e.message) || 'Changement impossible.'; }
     b.disabled = false;
   };
+  $('#aff-taille').onchange = e => GP.regler('taille', e.target.value);
+  $('#aff-theme').onchange = e => GP.regler('theme', e.target.value);
+  if ($('#svpurge')) $('#svpurge').onclick = () => modal('Supprimer les anciennes sauvegardes ?', `<p style="margin-top:0">Seules les <b>7 sauvegardes les plus récentes</b> seront conservées. Les autres seront supprimées définitivement.</p>`,
+    async () => { const r = await api('POST', '/api/sauvegardes/purger', { garder: 7 }); toast(`${r.supprimees} sauvegarde${r.supprimees > 1 ? 's' : ''} supprimée${r.supprimees > 1 ? 's' : ''}`); render(); }, 'Supprimer', true);
   if ($('#expfull')) $('#expfull').onclick = () => setTimeout(() => toast('Export en cours…'), 50);
 }
 
@@ -955,7 +985,7 @@ function drawList(all) {
       <div class="name">${fmtDate(c.date)}</div><div>${nomHtml(c.patient_id, c.patient_nom, c.patient_dn, c.patient_complement)}</div>
       <div class="muted">${esc(c.heure)} · ${esc(c.mode)}${c.facture_a ? ' · facturé à ' + esc(c.facture_a) : ''}</div>
       <div class="badges">${c.statut === 'réalisée' ? (c.paye ? `<span class="badge ok">Payée${c.mode_paiement ? ' · ' + esc(c.mode_paiement) : ''}</span>` : `<span class="badge warn">${euro(c.tarif)} à régler</span>`) : ''}${statutBadge(c.statut)}</div></div>`).join('')
-      : '<div class="empty">Rien ici.</div>';
+      : `<div class="empty"><div class="empty-t">${{ avenir: 'Aucune séance à venir', passees: 'Aucune séance passée', impayees: 'Tout est à jour' }[agenda.onglet]}</div>${{ avenir: 'Planifiez une séance depuis le calendrier ou avec « + Nouvelle consultation ».', passees: 'Les séances terminées apparaîtront ici.', impayees: 'Aucune séance réalisée n’attend de règlement.' }[agenda.onglet]}</div>`;
     document.querySelectorAll('#list .row').forEach(r => r.onclick = () => location.hash = '#/consultation/' + r.dataset.id);
     document.querySelectorAll('#chips .chip').forEach(c => c.onclick = () => { agenda.onglet = c.dataset.f; draw(); });
     document.querySelectorAll('#per .chip').forEach(c => c.onclick = () => { agenda.periode = c.dataset.p; draw(); });
@@ -965,6 +995,7 @@ function drawList(all) {
 
 const evClass = c => 'ev ev-' + ({ 'planifiée': 'plan', 'réalisée': 'ok', 'annulée': 'off', 'absence': 'abs' }[c.statut] || 'plan');
 const evTitle = c => `${c.heure || ''} ${c.patient_nom}${HOMO.has(c.patient_id) ? ' (' + [(ageInfo(c.patient_dn) || {}).texte, c.patient_complement].filter(Boolean).join(' · ') + ')' : ''} · ${c.statut}${c.statut === 'réalisée' && !c.paye ? ' · à régler' : ''}`.trim();
+const glissable = c => c.statut === 'planifiée' ? 'draggable="true"' : '';
 const dueDot = c => c.statut === 'réalisée' && !c.paye ? '<i class="due" title="À régler"></i>' : '';
 
 function drawCalendar(all) {
@@ -995,6 +1026,32 @@ function drawCalendar(all) {
   $('#todaybtn').onclick = () => { agenda.ref = today(); drawCalendar(all); };
 
   const open = id => location.hash = '#/consultation/' + id;
+  // Glisser-déposer : on déplace une séance planifiée (semaine : jour + heure au quart d'heure ; mois : jour, l'heure est conservée)
+  let drag = null;
+  const deplacer = async (id, date, heure) => {
+    const c = all.find(x => x.id === id);
+    if (!c || (c.date === date && (heure === undefined || c.heure === heure))) return;
+    const corps = { date, ...(heure !== undefined ? { heure } : {}), verifier_conflit: true };
+    const fait = () => { toast('Séance déplacée'); render(); };
+    try { await api('PUT', '/api/consultations/' + id, corps); fait(); }
+    catch (e) {
+      if (!(e.data && e.data.conflits)) return;
+      modal('Horaire déjà occupé', `<p style="margin-top:0"><b>${esc(c.patient_nom)}</b> → ${esc(fmtDate(date))}${heure ? ' à ' + esc(heure) : ''}</p>${e.data.conflits.map(x => `<div class="dbl-c"><div><b>${esc(x.patient_nom)}</b> <span class="muted tiny">${esc(x.heure || 'sans heure')}</span>
+        <div class="dbl-r tiny">${x.type === 'meme' ? 'Ce patient a déjà une séance ce jour-là (doublon ?)' : 'Chevauche l’horaire d’un autre patient'}</div></div></div>`).join('')}`,
+        async () => { await api('PUT', '/api/consultations/' + id, { ...corps, confirme_doublon: true }); fait(); }, 'Déplacer quand même');
+    }
+  };
+  const brancher = (cibles, quand) => {
+    document.querySelectorAll('[draggable=true][data-id]').forEach(el => {
+      el.addEventListener('dragstart', e => { drag = { id: Number(el.dataset.id), dy: e.clientY - el.getBoundingClientRect().top }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', el.dataset.id); setTimeout(() => el.classList.add('dragging'), 0); });
+      el.addEventListener('dragend', () => { drag = null; document.querySelectorAll('.dragging,.dragover').forEach(x => x.classList.remove('dragging', 'dragover')); });
+    });
+    document.querySelectorAll(cibles).forEach(col => {
+      col.addEventListener('dragover', e => { if (!drag) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move'; col.classList.add('dragover'); });
+      col.addEventListener('dragleave', e => { if (!col.contains(e.relatedTarget)) col.classList.remove('dragover'); });
+      col.addEventListener('drop', e => { if (!drag) return; e.preventDefault(); col.classList.remove('dragover'); const d = drag; drag = null; quand(col, e, d); });
+    });
+  };
   if (agenda.mode === 'mois') {
     const first = mondayOf(mois + '-01');
     const last = addDays(mondayOf(addDays(addMonths(agenda.ref, 1), -1)), 6);   // dimanche de la dernière semaine
@@ -1005,7 +1062,7 @@ function drawCalendar(all) {
         const shown = L.slice(0, 3);
         return `<div class="mo-cell ${d.startsWith(mois) ? '' : 'other'} ${d === t ? 'today' : ''}" data-day="${d}">
           <div class="mo-num">${Number(d.slice(8))}</div>
-          ${shown.map(c => `<a class="${evClass(c)}" data-id="${c.id}" title="${esc(evTitle(c))}">${dueDot(c)}<b>${esc(c.heure || '')}</b> ${esc(c.patient_nom)}</a>`).join('')}
+          ${shown.map(c => `<a class="${evClass(c)}" data-id="${c.id}" ${glissable(c)} title="${esc(evTitle(c))}">${dueDot(c)}<b>${esc(c.heure || '')}</b> ${esc(c.patient_nom)}</a>`).join('')}
           ${L.length > 3 ? `<a class="more" data-week="${d}">+ ${L.length - 3} autre${L.length - 3 > 1 ? 's' : ''}</a>` : ''}</div>`; }).join('')}</div>`;
     document.querySelectorAll('.mo-cell').forEach(cell => cell.onclick = e => {
       const ev = e.target.closest('[data-id]'), more = e.target.closest('[data-week]');
@@ -1013,6 +1070,7 @@ function drawCalendar(all) {
       if (more) { agenda.ref = more.dataset.week; agenda.mode = 'semaine'; return drawCalendar(all); }
       newConsultationModal(null, { date: cell.dataset.day });
     });
+    brancher('.mo-cell', (cell, e, d) => deplacer(d.id, cell.dataset.day));
     return;
   }
 
@@ -1037,7 +1095,7 @@ function drawCalendar(all) {
       cluster.push(x); clusterEnd = Math.max(clusterEnd, x.e);
     });
     flush();
-    return out.map(x => `<a class="${evClass(x.c)} blk" data-id="${x.c.id}" title="${esc(evTitle(x.c))}"
+    return out.map(x => `<a class="${evClass(x.c)} blk" data-id="${x.c.id}" ${glissable(x.c)} title="${esc(evTitle(x.c))}"
       style="top:${(x.s - h0 * 60) / 60 * HH}px;height:${Math.max(22, (x.e - x.s) / 60 * HH - 2)}px;left:${x.lane * 16 + 2}px;width:calc(100% - ${(x.n - 1) * 16 + 4}px);z-index:${x.lane + 1}">
       ${dueDot(x.c)}<b>${esc(x.c.heure)}</b> ${esc(x.c.patient_nom)}</a>`).join('');
   };
@@ -1052,6 +1110,11 @@ function drawCalendar(all) {
     newConsultationModal(null, { date: col.dataset.day, heure: `${pad(Math.floor(min / 60))}:${pad(min % 60)}` });
   });
   document.querySelectorAll('.wk-allday [data-id]').forEach(a => a.onclick = () => open(a.dataset.id));
+  brancher('.wk-col', (col, e, d) => {
+    const r = col.getBoundingClientRect();
+    const min = Math.max(0, Math.min(23 * 60 + 45, Math.round((h0 * 60 + (e.clientY - d.dy - r.top) / r.height * H * 60) / 15) * 15));
+    deplacer(d.id, col.dataset.day, `${pad(Math.floor(min / 60))}:${pad(min % 60)}`);
+  });
 }
 
 // Pastille ronde « H / F / NR » (couleur selon la civilité) : on voit au premier coup d'œil de quel patient il s'agit
@@ -1197,7 +1260,7 @@ async function viewModeles(m) {
   app.innerHTML = `<div class="head"><div><h1>Modèles de séance</h1>
       <div class="sub">Un modèle prérempli une nouvelle séance. Les séances déjà écrites ne changent pas.</div></div>
       <button class="btn primary" id="newt">+ Nouveau modèle</button></div>
-    <div class="tpl-layout"><div class="card list tpl-list" style="padding:0">${list.map(t => `<div class="row ${sel && t.id === sel.id ? 'on' : ''}" data-id="${t.id}">${esc(t.nom)}</div>`).join('') || '<div class="empty">Aucun modèle.</div>'}</div>
+    <div class="tpl-layout"><div class="card list tpl-list" style="padding:0">${list.map(t => `<div class="row ${sel && t.id === sel.id ? 'on' : ''}" data-id="${t.id}">${esc(t.nom)}</div>`).join('') || '<div class="empty"><div class="empty-t">Aucun modèle</div>Créez un modèle pour pré-remplir vos notes de séance.</div>'}</div>
     <div>${sel ? `<div class="card"><div class="field"><label>Nom du modèle</label><input id="tname" value="${esc(sel.nom)}"></div>
       ${editorHtml(sel.contenu)}<div class="actions" style="justify-content:space-between"><button class="btn danger small" id="tdel">Supprimer</button><button class="btn primary" id="tsave">Enregistrer le modèle</button></div></div>` : ''}</div></div>`;
   document.querySelectorAll('.tpl-list .row[data-id]').forEach(r => r.onclick = () => location.hash = '#/modeles/' + r.dataset.id);
@@ -1214,8 +1277,51 @@ async function viewModeles(m) {
 fetch('/api/version').then(r => r.json()).then(j => { $('#ver').textContent = 'Version ' + j.version; }).catch(() => {});
 
 // ---------- Corbeille ----------
+async function refreshJour() {
+  try { const n = (await (await fetch('/api/jour')).json()).n; const b = $('#day-count'); b.textContent = n || ''; b.hidden = !n; } catch { /* sans importance */ }
+}
 async function refreshTrash() {
   try { const n = (await (await fetch('/api/corbeille')).json()).length; const b = $('#trash-count'); b.textContent = n || ''; b.hidden = !n; } catch { /* sans importance */ }
+}
+
+// ---------- Vue : accueil ----------
+async function viewAccueil() {
+  const A = await api('GET', '/api/accueil');
+  const long = cap(new Date(A.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }));
+  const ligne = (c, avecDate) => `<div class="hr" data-id="${c.id}"><div class="t ${avecDate ? 'dt' : ''}">${avecDate ? esc(fmtDate(c.date)) + (c.heure ? ' · ' + esc(c.heure) : '') : esc(c.heure || 'sans heure')}</div>
+    <div class="w"><span class="name">${nomHtml(c.patient_id, c.patient_nom, c.patient_dn, c.patient_complement)}</span> <span class="muted tiny">${esc(c.mode)}</span></div>
+    <div class="s">${c.statut === 'réalisée' && !c.paye ? `<span class="badge warn">${euro(c.tarif)} à régler</span>` : ''}${statutBadge(c.statut)}</div></div>`;
+  const reste = A.aujourdhui.filter(c => c.statut === 'planifiée').length;
+  app.innerHTML = `<div class="head"><div><h1>Accueil</h1><div class="sub">${esc(long)}</div></div>
+      <div class="headbtns"><button class="btn primary" id="newc">+ Nouvelle consultation</button></div></div>
+    <div class="tiles">
+      <a class="tile" href="#/consultations" id="t-jour"><div class="n">${A.aujourdhui.length}</div><div class="l">séance${A.aujourdhui.length > 1 ? 's' : ''} aujourd’hui${reste && reste !== A.aujourdhui.length ? ` · ${reste} à venir` : ''}</div></a>
+      <a class="tile ${A.impayes.n ? 'alert' : ''}" href="#/consultations" id="t-regler"><div class="n">${A.impayes.n ? euro(A.impayes.total) : '0 €'}</div><div class="l">${A.impayes.n ? `à régler · ${A.impayes.n} séance${A.impayes.n > 1 ? 's' : ''}` : 'rien à régler'}</div></a>
+      <a class="tile" href="#/patients"><div class="n">${A.suivis}</div><div class="l">patient${A.suivis > 1 ? 's' : ''} en suivi</div></a>
+      <div class="tile"><div class="n">${A.seances_mois}</div><div class="l">séance${A.seances_mois > 1 ? 's' : ''} réalisée${A.seances_mois > 1 ? 's' : ''} ce mois-ci</div></div></div>
+    <div class="grid2">
+      <div>
+        <div class="card hcard"><h2>Aujourd’hui</h2>
+          ${A.aujourdhui.length ? `<div class="hrows">${A.aujourdhui.map(c => ligne(c, false)).join('')}</div>`
+            : '<div class="empty" style="padding:18px 0 6px"><div class="empty-t">Aucune séance aujourd’hui</div>Profitez-en pour compléter vos notes ou planifier la suite.</div>'}</div>
+        <div class="card hcard" style="margin-top:22px"><h2>Prochaines séances</h2>
+          ${A.prochaines.length ? `<div class="hrows">${A.prochaines.map(c => ligne(c, true)).join('')}</div>`
+            : '<div class="empty" style="padding:18px 0 6px"><div class="empty-t">Rien de planifié pour l’instant</div>Cliquez sur une date du calendrier pour créer une séance.</div>'}</div>
+      </div>
+      <div>
+        ${A.a_completer.n ? `<div class="card hcard" style="margin-bottom:22px"><h2>À compléter <span class="badge warn">${A.a_completer.n}</span></h2>
+          <p class="muted tiny" style="margin-top:-4px">Séances passées encore « planifiées » : marquez-les réalisées, absence ou annulées.</p>
+          <div class="hrows">${A.a_completer.liste.map(c => ligne(c, true)).join('')}</div></div>` : ''}
+        <div class="card hcard"><h2>À revoir</h2>
+          <p class="muted tiny" style="margin-top:-4px">Patients en suivi sans séance depuis ${A.semaines_sans_seance} semaines et sans rendez-vous prévu.</p>
+          ${A.a_revoir.length ? `<div class="hrows">${A.a_revoir.map(p => `<div class="hr" data-patient="${p.id}"><div class="w"><span class="name">${esc(p.nom)}</span></div><div class="s muted tiny">dernière séance : ${esc(fmtDate(p.derniere))}</div></div>`).join('')}</div>`
+            : '<div class="empty" style="padding:14px 0 4px">Personne à relancer.</div>'}</div>
+      </div></div>`;
+  $('#newc').onclick = () => newConsultationModal(null);
+  $('#t-jour').onclick = () => { agenda.vue = 'calendrier'; agenda.mode = 'semaine'; agenda.ref = A.date; };
+  $('#t-regler').onclick = () => { agenda.vue = 'liste'; agenda.onglet = 'impayees'; agenda.periode = 'tout'; };
+  document.querySelectorAll('.hr[data-id]').forEach(r => r.onclick = () => location.hash = '#/consultation/' + r.dataset.id);
+  document.querySelectorAll('.hr[data-patient]').forEach(r => r.onclick = () => location.hash = '#/patient/' + r.dataset.patient);
 }
 
 async function viewCorbeille() {
@@ -1230,19 +1336,19 @@ async function viewCorbeille() {
         <div style="min-width:0"><div class="name">${esc(it.libelle)}</div><div class="muted tiny">${esc(it.detail)} · supprimé le ${fmtDate(it.supprime_le.slice(0, 10))}</div></div>
         <div class="${it.jours_restants <= 3 ? 'warntxt' : 'muted'} tiny">${it.jours_restants <= 0 ? 'effacement imminent' : `effacé dans ${it.jours_restants} jour${it.jours_restants > 1 ? 's' : ''}`}</div>
         <div class="badges"><button class="btn small" data-restore="${it.id}">Restaurer</button><button class="btn small danger" data-purge="${it.id}">Effacer</button></div>
-      </div>`).join('') : '<div class="empty">La corbeille est vide.</div>'}</div>`;
+      </div>`).join('') : '<div class="empty"><div class="empty-t">La corbeille est vide</div>Les éléments supprimés apparaîtront ici pendant 30 jours avant d’être effacés.</div>'}</div>`;
   document.querySelectorAll('[data-restore]').forEach(b => b.onclick = async () => {
     const r = await api('POST', `/api/corbeille/${b.dataset.restore}/restaurer`);
     toast(`« ${r.libelle} » restauré`); render();
   });
   document.querySelectorAll('[data-purge]').forEach(b => b.onclick = () => {
     const it = items.find(x => String(x.id) === b.dataset.purge);
-    modal('Effacer définitivement ?', `<p style="margin-top:0"><b>${esc(it.libelle)}</b> sera effacé pour toujours. Cette action est irréversible.</p>`,
-      async () => { await api('DELETE', '/api/corbeille/' + it.id); toast('Effacé définitivement'); render(); }, 'Effacer définitivement', true);
+    modal('Effacer définitivement ?', `<p style="margin-top:0"><b>${esc(it.libelle)}</b> sera effacé pour toujours. Cette action est irréversible.</p><label class="check"><input type="checkbox" name="purge" checked><span>Supprimer aussi les sauvegardes qui contiennent encore ces données <span class="muted tiny">(recommandé : sinon l’effacement n’est pas réel. Une sauvegarde saine est refaite aussitôt. Vos copies hors de ce dossier, exports ou conteneur recopié, ne sont pas touchées.)</span></span></label>`,
+      async fd => { await api('DELETE', '/api/corbeille/' + it.id, { purger_sauvegardes: !!fd.get('purge') }); toast('Effacé définitivement'); render(); }, 'Effacer définitivement', true);
   });
   const empty = $('#empty');
-  if (empty) empty.onclick = () => modal('Vider la corbeille ?', `<p style="margin-top:0"><b>${items.length} élément${items.length > 1 ? 's' : ''}</b> seront effacés pour toujours. Cette action est irréversible.</p>`,
-    async () => { await api('POST', '/api/corbeille/vider'); toast('Corbeille vidée'); render(); }, 'Vider la corbeille', true);
+  if (empty) empty.onclick = () => modal('Vider la corbeille ?', `<p style="margin-top:0"><b>${items.length} élément${items.length > 1 ? 's' : ''}</b> seront effacés pour toujours. Cette action est irréversible.</p><label class="check"><input type="checkbox" name="purge" checked><span>Supprimer aussi les sauvegardes qui contiennent encore ces données <span class="muted tiny">(recommandé : sinon l’effacement n’est pas réel. Une sauvegarde saine est refaite aussitôt. Vos copies hors de ce dossier, exports ou conteneur recopié, ne sont pas touchées.)</span></span></label>`,
+    async fd => { await api('POST', '/api/corbeille/vider', { purger_sauvegardes: !!fd.get('purge') }); toast('Corbeille vidée'); render(); }, 'Vider la corbeille', true);
 }
 
 

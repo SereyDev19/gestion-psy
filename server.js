@@ -600,6 +600,31 @@ route('GET', '/api/consultations', () =>
   all(`SELECT c.*, ${NOMC('p')} AS patient_nom, p.date_naissance AS patient_dn, p.complement AS patient_complement FROM consultations c JOIN patients p ON p.id=c.patient_id
        ORDER BY c.date DESC, c.heure DESC`).map(consultOut));
 
+// Page d'accueil : ce qui demande de l'attention aujourd'hui
+const SEMAINES_SANS_SEANCE = 6;
+route('GET', '/api/jour', () => ({ n: get(`SELECT COUNT(*) n FROM consultations WHERE date=? AND statut<>'annulée'`, aujourdhui()).n }));
+route('GET', '/api/accueil', () => {
+  const t = aujourdhui();
+  const base = `SELECT c.*, ${NOMC('p')} AS patient_nom, p.date_naissance AS patient_dn, p.complement AS patient_complement FROM consultations c JOIN patients p ON p.id=c.patient_id`;
+  const impayes = get(`SELECT COUNT(*) n, COALESCE(SUM(tarif),0) total FROM consultations WHERE statut='réalisée' AND paye=0`);
+  const aCompleter = get(`SELECT COUNT(*) n FROM consultations WHERE statut='planifiée' AND date<?`, t).n;
+  return {
+    date: t,
+    aujourdhui: all(`${base} WHERE c.date=? AND c.statut<>'annulée' ORDER BY c.heure`, t).map(consultOut),
+    prochaines: all(`${base} WHERE c.statut='planifiée' AND c.date>? ORDER BY c.date, c.heure LIMIT 6`, t).map(consultOut),
+    a_completer: { n: aCompleter, liste: all(`${base} WHERE c.statut='planifiée' AND c.date<? ORDER BY c.date DESC, c.heure DESC LIMIT 8`, t).map(consultOut) },
+    impayes: { n: impayes.n, total: impayes.total },
+    a_revoir: all(`SELECT p.id, ${NOMC('p')} AS nom, l.d AS derniere FROM patients p
+        JOIN (SELECT patient_id, MAX(date) d FROM consultations WHERE statut='réalisée' GROUP BY patient_id) l ON l.patient_id = p.id
+        WHERE p.statut='suivi en cours' AND p.archive_le IS NULL AND l.d < date(?, '-${SEMAINES_SANS_SEANCE * 7} day')
+          AND NOT EXISTS (SELECT 1 FROM consultations c WHERE c.patient_id = p.id AND c.statut='planifiée' AND c.date >= ?)
+        ORDER BY l.d LIMIT 12`, t, t),
+    semaines_sans_seance: SEMAINES_SANS_SEANCE,
+    suivis: get(`SELECT COUNT(*) n FROM patients WHERE statut='suivi en cours' AND archive_le IS NULL`).n,
+    seances_mois: get(`SELECT COUNT(*) n FROM consultations WHERE statut='réalisée' AND substr(date,1,7)=?`, t.slice(0, 7)).n,
+  };
+});
+
 route('GET', '/api/consultations/:id', ({ m }) => {
   const c = get(`SELECT c.*, ${NOMC('p')} AS patient_nom, p.date_naissance AS patient_dn, p.complement AS patient_complement FROM consultations c JOIN patients p ON p.id=c.patient_id WHERE c.id=?`, m[1]);
   if (!c) throw httpErr(404, 'Consultation introuvable');
@@ -624,16 +649,31 @@ function conflitsSeance(b, ignorerId = 0) {
   return out;
 }
 
+const ajouteJours = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 route('POST', '/api/consultations', ({ body }) => {
   const b = consultIn({ heure: '', duree: 50, mode: 'cabinet', statut: 'planifiée', paye: 0, presents: '[]', facture_a: '', contenu: '', mode_paiement: '', ...body });
   const err = validateConsult(b); if (err) throw httpErr(400, err);
   if (get('SELECT archive_le FROM patients WHERE id=?', b.patient_id).archive_le) throw httpErr(409, 'Patient archivé : désarchivez-le avant de créer une séance');
   if (b.tarif === undefined || b.tarif === null || b.tarif === '') b.tarif = tarifSuggere(b.patient_id);
   if (!(Number(b.tarif) >= 0)) throw httpErr(400, 'Tarif invalide');
-  const conflits = conflitsSeance(b);
+  // Série : même patient, même heure, toutes les 1 ou 2 semaines (séances « planifiées »)
+  let dates = [b.date];
+  if (body.repetition) {
+    const pas = Number(body.repetition.pas_jours), n = Math.round(Number(body.repetition.nombre));
+    if (![7, 14].includes(pas)) throw httpErr(400, 'Rythme de répétition invalide');
+    if (!(n >= 2 && n <= 52)) throw httpErr(400, 'Nombre de séances : entre 2 et 52');
+    dates = Array.from({ length: n }, (_, k) => ajouteJours(b.date, k * pas));
+    b.statut = 'planifiée'; b.paye = 0;
+  }
+  const conflits = dates.flatMap(d => conflitsSeance({ ...b, date: d }).map(x => ({ ...x, date: d })));
   if (conflits.length && !body.confirme_doublon) throw Object.assign(httpErr(409, 'Conflit d’horaire'), { extra: { conflits } });
-  const r = run(`INSERT INTO consultations (${CONSULT_F.join(',')}) VALUES (${CONSULT_F.map(() => '?').join(',')})`, ...pick(b, CONSULT_F));
-  return consultOut(get('SELECT * FROM consultations WHERE id=?', r.lastInsertRowid));
+  db.exec('BEGIN');
+  try {
+    const ids = dates.map(d => run(`INSERT INTO consultations (${CONSULT_F.join(',')}) VALUES (${CONSULT_F.map(() => '?').join(',')})`, ...pick({ ...b, date: d }, CONSULT_F)).lastInsertRowid);
+    db.exec('COMMIT');
+    const out = consultOut(get('SELECT * FROM consultations WHERE id=?', ids[0]));
+    return body.repetition ? { ...out, creees: ids.length, dates } : out;
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
 });
 
 route('PUT', '/api/consultations/:id', ({ m, body }) => {
@@ -641,6 +681,10 @@ route('PUT', '/api/consultations/:id', ({ m, body }) => {
   if (!cur) throw httpErr(404, 'Consultation introuvable');
   const b = { ...cur, ...consultIn(body) };
   const err = validateConsult(b); if (err) throw httpErr(400, err);
+  if (body.verifier_conflit && b.statut !== 'annulée' && (cur.date !== b.date || cur.heure !== b.heure || cur.duree !== b.duree)) {
+    const conflits = conflitsSeance(b, cur.id);
+    if (conflits.length && !body.confirme_doublon) throw Object.assign(httpErr(409, 'Conflit d’horaire'), { extra: { conflits } });
+  }
   if (typeof b.contenu === 'string' && b.contenu !== cur.contenu) garderVersion(cur, b.contenu);
   run(`UPDATE consultations SET ${CONSULT_F.map(k => k + '=?').join(',')} WHERE id=?`, ...pick(b, CONSULT_F), m[1]);
   return consultOut(get('SELECT * FROM consultations WHERE id=?', m[1]));
@@ -998,17 +1042,62 @@ route('POST', '/api/corbeille/:id/restaurer', ({ m }) => {
   try { const cible = restaurer(item); db.exec('COMMIT'); return { ok: true, libelle: item.libelle, type: item.type, cible }; }
   catch (e) { db.exec('ROLLBACK'); throw e; }
 });
-// Effacement définitif (irréversible) : copie de sécurité juste avant
-route('DELETE', '/api/corbeille/:id', ({ m }) => {
+// Effacement définitif (irréversible). Le contenu effacé est écrasé dans la base (secure_delete) ; les sauvegardes automatiques ou de sécurité
+// qui contiennent encore ces données sont supprimées elles aussi (sauf si l'utilisatrice le refuse), puis une sauvegarde saine est refaite.
+function effacementReel(body) {
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  let supprimees = 0;
+  if (!body || body.purger_sauvegardes !== false) {
+    for (const f of infoSauvegardes().fichiers) { try { fs.unlinkSync(path.join(DIR_SAUV, f.nom)); supprimees++; } catch { /* déjà parti */ } }
+    sauvegardeAuto(true);
+  }
+  return supprimees;
+}
+route('DELETE', '/api/corbeille/:id', ({ m, body }) => {
   if (!get('SELECT 1 FROM corbeille WHERE id=?', m[1])) throw httpErr(404, 'Élément introuvable');
-  snapshot('avant-effacement-definitif');
   run('DELETE FROM corbeille WHERE id=?', m[1]);
-  return { ok: true };
+  return { ok: true, sauvegardes_supprimees: effacementReel(body) };
 });
-route('POST', '/api/corbeille/vider', () => {
+route('POST', '/api/corbeille/vider', ({ body }) => {
   const n = get('SELECT COUNT(*) n FROM corbeille').n;
-  if (n) { snapshot('avant-effacement-definitif'); run('DELETE FROM corbeille'); }
-  return { ok: true, supprimes: n };
+  let sup = 0;
+  if (n) { run('DELETE FROM corbeille'); sup = effacementReel(body); }
+  return { ok: true, supprimes: n, sauvegardes_supprimees: sup };
+});
+
+// ---------- Sauvegardes automatiques ----------
+// Une copie cohérente de la base par jour (au lancement, puis vérifiée chaque heure), dans le dossier « sauvegardes » à côté des données ; on garde les 30 dernières.
+const DIR_SAUV = path.join(DATA_DIR, 'sauvegardes');
+function sauvegardeAuto(forcer = false) {
+  try {
+    fs.mkdirSync(DIR_SAUV, { recursive: true });
+    const jour = new Date().toISOString().slice(0, 10);
+    if (!forcer && fs.readdirSync(DIR_SAUV).some(f => f.startsWith('auto-' + jour))) return;
+    if (!get('SELECT 1 FROM patients LIMIT 1')) return;                       // base encore vide : rien à protéger
+    snapshot('auto');
+  } catch (e) { console.error('Sauvegarde automatique impossible :', e.message); }
+}
+const typeSauv = f => f.startsWith('auto-') ? 'automatique' : f.startsWith('avant-migration') ? 'avant mise à jour' : f.startsWith('avant-fusion') ? 'avant fusion' : f.startsWith('avant-effacement') ? 'avant effacement' : 'autre';
+function infoSauvegardes() {
+  const taille = f => { try { return fs.statSync(f).size; } catch { return 0; } };
+  const b = path.join(DATA_DIR, 'cabinet.db');
+  let fichiers = [];
+  try {
+    fichiers = fs.readdirSync(DIR_SAUV).filter(f => f.endsWith('.db')).map(f => {
+      const st = fs.statSync(path.join(DIR_SAUV, f));
+      return { nom: f, type: typeSauv(f), taille: st.size, date: st.mtime.toISOString() };
+    }).sort((x, y) => y.date.localeCompare(x.date) || y.nom.localeCompare(x.nom));
+  } catch { /* pas encore de dossier */ }
+  const auto = fichiers.find(f => f.type === 'automatique');
+  return { base: taille(b) + taille(b + '-wal') + taille(b + '-shm'), nombre: fichiers.length, taille: fichiers.reduce((n, f) => n + f.taille, 0), derniere_auto: auto ? auto.date : null, fichiers };
+}
+route('GET', '/api/sauvegardes', () => infoSauvegardes());
+// Ne garder que les N sauvegardes les plus récentes (toutes sortes confondues)
+route('POST', '/api/sauvegardes/purger', ({ body }) => {
+  const garder = Math.max(1, Math.min(100, Math.round(Number(body.garder)) || 7));
+  const l = infoSauvegardes().fichiers;
+  l.slice(garder).forEach(f => { try { fs.unlinkSync(path.join(DIR_SAUV, f.nom)); } catch { /* déjà parti */ } });
+  return { supprimees: Math.max(0, l.length - garder), ...infoSauvegardes() };
 });
 
 // Sauvegarde : copie cohérente du fichier de base
@@ -1260,7 +1349,7 @@ const server = http.createServer(async (req, res) => {
       for (const r of routes) {
         const m = r.method === req.method && url.pathname.match(r.re);
         if (!m) continue;
-        const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req) : {};
+        const body = ['POST', 'PUT', 'DELETE'].includes(req.method) ? await readBody(req) : {};
         const out = await r.fn({ m, body, url, req });
         if (out && out.__raw) { res.writeHead(200, { 'Content-Type': out.type, ...out.headers }); return res.end(out.__raw); }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1331,5 +1420,7 @@ server.on('error', e => {
 purgerCorbeille();
 setInterval(purgerCorbeille, 3600 * 1000).unref();
 
+sauvegardeAuto();
+setInterval(() => sauvegardeAuto(), 3600e3).unref();
 try { fs.writeFileSync(path.join(DATA_DIR, 'LISEZ-MOI-DONNEES.txt'), docSchema()); } catch { /* dossier en lecture seule : sans importance */ }
 server.listen(PORT, '127.0.0.1', () => console.log(`Gestion Psy (v${require('./package.json').version}) prêt : http://localhost:${PORT}`));

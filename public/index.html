@@ -5,15 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Gestion Psy</title>
   <link rel="icon" type="image/png" href="/favicon.png">
-  <link rel="stylesheet" href="/style.css?v=12">
+  <link rel="stylesheet" href="/style.css?v=15">
+  <script src="/theme.js?v=15"></script>
 </head>
 <body>
   <aside class="side">
     <div class="brand"><img src="/logo-256.png" alt="" width="34" height="34"> <span id="brand-name">Gestion Psy</span></div>
     <button class="searchbtn" id="searchbtn" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>Rechercher<kbd id="kbd">Ctrl K</kbd></button>
     <nav>
+      <a href="#/accueil" data-nav="accueil"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 4.5l8 7M6 10v9.5h4.5v-5h3v5H18V10"/></svg>Accueil</a>
       <a href="#/patients" data-nav="patients"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="9" r="2.4"/><path d="M16.5 14c2.6.1 4.5 1.9 4.5 4.5"/></svg>Patients</a>
-      <a href="#/consultations" data-nav="consultations"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 10h16M9 3.5v3M15 3.5v3"/></svg>Consultations</a>
+      <a href="#/consultations" data-nav="consultations"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 10h16M9 3.5v3M15 3.5v3"/></svg>Consultations <span class="count" id="day-count" hidden title="Séances aujourd’hui"></span></a>
     </nav>
     <div class="nav-aux">
       <div class="nav-section">Réglages</div>
@@ -37,6 +39,6 @@
   <div id="lock-root"></div>
   <div id="picker-root"></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=14"></script>
+  <script src="/app.js?v=15"></script>
 </body>
 </html>

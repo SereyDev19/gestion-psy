@@ -48,6 +48,10 @@
 - **Notes de séance** : gras, italique, **souligné** et **couleur du texte** (couleurs de la charte, puis couleurs courantes). Les couleurs et le souligné se retrouvent dans les exports Word et PDF.
 - **Identité en haut de chaque séance** : nom et prénom en grand, âge, et une pastille ronde colorée **H** (bleu), **F** (rose) ou **NR** (gris) pour ne jamais se tromper de patient.
 - **Export Markdown (.md)** du dossier d'un patient ou d'une séance (texte brut lisible partout) ; l'export complet contient aussi un `.md` par patient.
+- **Page d'accueil** (ouverte au lancement) : séances du jour, prochaines séances, séances passées encore « planifiées » (à compléter), montant à régler, patients à revoir (en suivi, sans séance depuis 6 semaines et sans rendez-vous prévu), patients en suivi et séances du mois. Le menu indique le nombre de séances du jour à côté de « Consultations ».
+- **Calendrier** : on **glisse-dépose** une séance planifiée vers un autre jour (vue Mois : l'heure est conservée) ou un autre jour et une autre heure, au quart d'heure près (vue Semaine). Si l'horaire est déjà pris, l'appli le signale et demande confirmation. **Séries** : dans « Nouvelle séance », « Répétition » crée chaque semaine ou toutes les 2 semaines (2 à 52 séances) ; les conflits sont signalés avant toute création.
+- **Sauvegarde automatique** : une copie cohérente de la base chaque jour, à l'ouverture, dans `sauvegardes/` à côté des données (30 conservées). **Paramètres > Sauvegardes automatiques** montre la taille de la base, le nombre et le poids des sauvegardes, et permet de ne garder que les 7 plus récentes. Elles sont dans le même volume que les données : elles ne remplacent pas la copie du conteneur chiffré sur un support externe.
+- **Affichage** (Paramètres) : taille du texte (normale, grande, très grande) et thème clair, sombre ou automatique ; réglages propres à chaque ordinateur.
 - **Doublons** : un champ de recherche filtre les paires par nom, téléphone ou e-mail.
 - **Mise à jour de l'application** : Windows, relancer le nouvel installateur `Gestion-Psy-Setup-X.Y.Z.exe` (il remplace l'ancienne version, les données restent en place) ; Mac, double-clic sur `Mettre-a-jour-Mac.command` (fabrique la nouvelle version et la remplace dans Applications).
 - **Format imposé** pour le téléphone et l'e-mail (facultatifs, mais valides s'ils sont remplis) : numéro français à 10 chiffres mis en forme automatiquement (`06 12 34 56 78`, les `+33` sont convertis) ou numéro international (`+32 470 12 34 56`) ; e-mail complet, enregistré en minuscules. Un champ mal rempli est signalé en rouge et bloque l'enregistrement ; une ancienne fiche déjà mal renseignée ne bloque pas les autres modifications.
@@ -58,9 +62,10 @@
   **30 jours**, restaurables en un clic, puis sont effacés définitivement (et réellement effacés du fichier de données).
   On peut aussi effacer un élément ou vider la corbeille à la main. Une séance dont le patient est dans la corbeille
   ne se restaure qu'après lui.
-  Attention : avant un effacement définitif manuel, l'appli garde une copie de sécurité dans `data/sauvegardes/`
-  (30 maximum) ; elles contiennent encore les données effacées jusqu'à leur renouvellement. Supprimer ce dossier
-  si l'on veut un effacement total.
+  **Effacement définitif manuel** : le contenu est écrasé dans le fichier de données, et une case (cochée par défaut)
+  propose de **supprimer aussi les sauvegardes** qui contiennent encore ces données ; une sauvegarde saine est refaite
+  aussitôt. Les copies faites hors du dossier des données (exports, conteneur chiffré recopié, clé USB) ne sont pas touchées.
+  L'effacement automatique après 30 jours ne touche pas aux sauvegardes : elles se renouvellent seules (30 jours au plus).
 - Enregistrement automatique des notes.
 - Sauvegarde en un clic (bouton en bas à gauche) : fichier `.db` à conserver sur un support chiffré.
 
@@ -102,5 +107,5 @@ Aucune donnée n'est envoyée sur internet.
 - Les modèles de séance sont dans la base : ils ne sont jamais écrasés par une mise à jour.
 
 ## Pas encore fait (à décider ensemble)
-Version Windows en un seul exécutable à double-cliquer, champs personnalisés,
+Champs personnalisés,
 chiffrement du fichier de données, impression d'une facture / attestation.

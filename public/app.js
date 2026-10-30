@@ -673,7 +673,7 @@ async function viewPatient(m) {
   app.innerHTML = `
     <a class="crumb" href="#/patients">← Patients</a>
     <div class="head"><div><h1>${esc(p.nom)}</h1>
-      <div class="sub">${HOMO.has(id) ? `<span class="badge warn" title="Un autre patient porte le même nom">homonyme</span> ` : ''}${p.complement ? `<span class="homo">${esc(p.complement)}</span> · ` : ''}${etatBadge(p)}${p.archive_le ? ` <span class="muted">depuis le ${fmtDate(p.archive_le)}</span>` : ''} ${p.type === 'mineur' ? '<span class="badge blue">Mineur</span>' : ''}
+      <div class="sub"><span class="badge idn" title="Identifiant unique du patient : c’est le numéro utilisé dans les exports anonymes">N° ${id}</span> ${HOMO.has(id) ? `<span class="badge warn" title="Un autre patient porte le même nom">homonyme</span> ` : ''}${p.complement ? `<span class="homo">${esc(p.complement)}</span> · ` : ''}${etatBadge(p)}${p.archive_le ? ` <span class="muted">depuis le ${fmtDate(p.archive_le)}</span>` : ''} ${p.type === 'mineur' ? '<span class="badge blue">Mineur</span>' : ''}
         ${p.age_texte ? ' · ' + esc(p.age_texte) : ''} · ${realisees.length} séance${realisees.length > 1 ? 's' : ''} réalisée${realisees.length > 1 ? 's' : ''}${du ? ` · <span style="color:var(--warn)">${euro(du)} à régler</span>` : ''}</div></div>
       <div class="headbtns">${exportBtn('patient', `/api/patients/${id}/export`)}<button class="btn" id="edit">Modifier</button> ${p.archive_le ? '<button class="btn primary" id="unarchive">Désarchiver</button>' : '<button class="btn primary" id="newc">+ Nouvelle séance</button>'}</div></div>
     <div class="grid2">
@@ -1297,7 +1297,7 @@ async function viewAccueil() {
     <div class="s">${c.statut === 'réalisée' && !c.paye ? `<span class="badge warn">${euro(c.tarif)} à régler</span>` : ''}${statutBadge(c.statut)}</div></div>`;
   const reste = A.aujourdhui.filter(c => c.statut === 'planifiée').length;
   app.innerHTML = `<div class="head"><div><h1>Accueil</h1><div class="sub">${esc(long)}</div></div>
-      <div class="headbtns"><button class="btn primary" id="newc">+ Nouvelle consultation</button></div></div>
+      <div class="headbtns"><button class="btn" id="newp">+ Nouveau patient</button><button class="btn primary" id="newc">+ Nouvelle consultation</button></div></div>
     <div class="tiles">
       <a class="tile" href="#/consultations" id="t-jour"><div class="n">${A.aujourdhui.length}</div><div class="l">séance${A.aujourdhui.length > 1 ? 's' : ''} aujourd’hui${reste && reste !== A.aujourdhui.length ? ` · ${reste} à venir` : ''}</div></a>
       <a class="tile ${A.impayes.n ? 'alert' : ''}" href="#/consultations" id="t-regler"><div class="n">${A.impayes.n ? euro(A.impayes.total) : '0 €'}</div><div class="l">${A.impayes.n ? `à régler · ${A.impayes.n} séance${A.impayes.n > 1 ? 's' : ''}` : 'rien à régler'}</div></a>
@@ -1322,6 +1322,7 @@ async function viewAccueil() {
             : '<div class="empty" style="padding:14px 0 4px">Personne à relancer.</div>'}</div>
       </div></div>`;
   $('#newc').onclick = () => newConsultationModal(null);
+  $('#newp').onclick = () => patientModal();
   $('#t-jour').onclick = () => { agenda.vue = 'calendrier'; agenda.mode = 'semaine'; agenda.ref = A.date; };
   $('#t-regler').onclick = () => { agenda.vue = 'liste'; agenda.onglet = 'impayees'; agenda.periode = 'tout'; };
   document.querySelectorAll('.hr[data-id]').forEach(r => r.onclick = () => location.hash = '#/consultation/' + r.dataset.id);

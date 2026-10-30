@@ -380,3 +380,5 @@ a.tile:hover { border-color: var(--line2); }
 :root[data-theme=dark] .timeline .item.acc:hover { background: #46365a; }
 :root[data-theme=dark] .hdiff del { background: rgba(228,100,100,.3); }
 :root[data-theme=dark] .hdiff ins { background: rgba(80,200,120,.28); }
+
+.badge.idn { background: transparent; border: 1px solid var(--line2); color: var(--muted); font-variant-numeric: tabular-nums; }

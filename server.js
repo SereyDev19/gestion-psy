@@ -291,7 +291,11 @@ function libellesPresents(liste) {
     return p ? p.n : null;
   }).filter(Boolean);
 }
-const presentsTxt = c => (c.presents || []).includes('patient') ? ['le patient', ...(c.autres_presents || [])].join(', ') : (c.autres_presents || []).join(', ');
+const presentsTxt = (c, anonyme = false) => {
+  const autres = c.autres_presents || [], pat = (c.presents || []).includes('patient');
+  if (anonyme) return [pat ? 'le patient' : '', autres.length ? (autres.length === 1 ? '1 autre personne' : autres.length + ' autres personnes') : ''].filter(Boolean).join(', ');
+  return pat ? ['le patient', ...autres].join(', ') : autres.join(', ');
+};
 function consultOut(c) {
   if (!c) return c;
   const presents = JSON.parse(c.presents || '[]');
@@ -889,8 +893,9 @@ const fichier = (buf, type, nom, inline) => ({ __raw: buf, type, headers: { 'Con
 function optionsExport(url) {
   const q = url.searchParams, date = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : null;
   const liste = (k, tous) => q.has(k) ? q.get(k).split(',').filter(x => tous.includes(x)) : tous;
-  return { format: q.get('format'), du: date(q.get('du')), au: date(q.get('au')), statuts: liste('statuts', STATUTS_SEANCE),
-    inclure: new Set(liste('inclure', ['infos', 'liens', 'ressources', 'notes', 'finances'])) };
+  const inclure = new Set(liste('inclure', ['infos', 'liens', 'ressources', 'notes', 'finances']));
+  // « infos » décoché = export ANONYME : ni nom, ni coordonnées, ni date de naissance ; les noms des proches deviennent des rôles, le patient un simple numéro
+  return { format: q.get('format'), du: date(q.get('du')), au: date(q.get('au')), statuts: liste('statuts', STATUTS_SEANCE), inclure, anonyme: !inclure.has('infos') };
 }
 const filtreSeances = (liste, o) => liste.filter(c => o.statuts.includes(c.statut) && (!o.du || c.date >= o.du) && (!o.au || c.date <= o.au));
 const periodeTxt = o => o.du || o.au ? `${o.du ? 'du ' + frDate(o.du) : ''}${o.du && o.au ? ' ' : ''}${o.au ? 'au ' + frDate(o.au) : ''}` : '';
@@ -906,19 +911,19 @@ const sortie = (format, nom, entetes, lignes, titre, blocs) => {
 const oui = b => b ? 'Oui' : 'Non';
 
 // Colonnes : [clé d'option | null (toujours), en-tête]. Les colonnes dont l'option est décochée disparaissent du CSV.
-const COL_PATIENT = [[null, 'Patient n°'], ['infos', 'Civilité'], [null, 'Nom'], [null, 'Prénom'], ['infos', 'Date de naissance'], ['infos', 'Âge'], ['infos', 'Type'], ['infos', 'Statut'], ['infos', 'Archivé le'],
+const COL_PATIENT = [[null, 'Patient n°'], ['infos', 'Civilité'], ['infos', 'Nom'], ['infos', 'Prénom'], ['infos', 'Date de naissance'], ['infos', 'Âge'], [null, 'Type'], [null, 'Statut'], [null, 'Archivé le'],
   ['infos', 'Téléphone'], ['infos', 'E-mail'], ['infos', 'Autres coordonnées'], ['infos', 'Notes pratiques'], ['liens', 'Parents / responsables'], ['liens', 'Enfants / ados']];
 const COL_SEANCE = [[null, 'Séance n°'], [null, 'Date'], [null, 'Heure'], [null, 'Durée (min)'], [null, 'Mode'], [null, 'Statut de la séance'], ['finances', 'Tarif (€)'], ['finances', 'Payée'], ['finances', 'Mode de paiement'], ['finances', 'Facturé à'],
   [null, 'Personnes présentes'], ['notes', 'Contenu de la séance']];
 const gardees = (cols, o) => cols.map(([k]) => !k || o.inclure.has(k));
 const garder = (vals, garde) => vals.filter((_, i) => garde[i]);
 const enTetes = (cols, o) => garder(cols.map(c => c[1]), gardees(cols, o));
-const valsSeance = c => [c.id, c.date, c.heure, c.duree, c.mode, c.statut, c.tarif, oui(c.paye), c.mode_paiement || '', c.facture_a || '', presentsTxt(c), X.texteBrut(c.contenu)];
-const valsIdentite = p => [p.id, p.civilite === 'M' ? 'M.' : p.civilite, p.nom_famille, p.prenom, p.date_naissance || '', p.age_texte || '', p.type, p.statut, p.archive_le || '', p.telephone, p.email, p.contact, p.notes,
-  (p.liens || []).filter(l => l.sens === 'parent').map(l => `${l.autre_nom} (${l.role})`).join(', '), (p.liens || []).filter(l => l.sens === 'enfant').map(l => `${l.autre_nom} (${l.role})`).join(', ')];
+const valsSeance = (c, anon = false) => [c.id, c.date, c.heure, c.duree, c.mode, c.statut, c.tarif, oui(c.paye), c.mode_paiement || '', anon ? (c.facture_a ? 'un tiers' : '') : c.facture_a || '', presentsTxt(c, anon), X.texteBrut(c.contenu)];
+const valsIdentite = (p, anon = false) => [p.id, p.civilite === 'M' ? 'M.' : p.civilite, p.nom_famille, p.prenom, p.date_naissance || '', p.age_texte || '', p.type, p.statut, p.archive_le || '', p.telephone, p.email, p.contact, p.notes,
+  (p.liens || []).filter(l => l.sens === 'parent').map(l => anon ? l.role : `${l.autre_nom} (${l.role})`).join(', '), (p.liens || []).filter(l => l.sens === 'enfant').map(l => anon ? `enfant / ado (${l.role})` : `${l.autre_nom} (${l.role})`).join(', ')];
 const resumeSeance = (c, o) => [c.mode, c.duree ? c.duree + ' min' : '', c.statut,
   ...(o.inclure.has('finances') ? [c.tarif ? `${c.tarif} €` : '', c.paye ? 'payée' + (c.mode_paiement ? ' (' + c.mode_paiement + ')' : '') : (c.statut === 'réalisée' ? 'à régler' : '')] : []),
-  presentsTxt(c) ? 'présents : ' + presentsTxt(c) : '', o.inclure.has('finances') && c.facture_a ? 'facturé à ' + c.facture_a : ''].filter(Boolean).join(' · ');
+  presentsTxt(c, o.anonyme) ? 'présents : ' + presentsTxt(c, o.anonyme) : '', o.inclure.has('finances') && c.facture_a ? 'facturé à ' + (o.anonyme ? 'un tiers' : c.facture_a) : ''].filter(Boolean).join(' · ');
 const blocSeance = (c, titre, o) => [{ k: 'h3', t: titre }, { k: 'meta', t: resumeSeance(c, o) },
   ...(!o.inclure.has('notes') ? [] : X.texteBrut(c.contenu) ? [{ k: 'rich', html: c.contenu }] : [{ k: 'p', t: 'Aucune note.' }])];
 
@@ -927,16 +932,17 @@ function dossierPatient(p, o) {
   const seances = filtreSeances([...p.consultations], o).sort((a, b) => (a.date + a.heure).localeCompare(b.date + b.heure));
   const gP = gardees(COL_PATIENT, o), gS = gardees(COL_SEANCE, o);
   const entetes = [...enTetes(COL_PATIENT, o), ...enTetes(COL_SEANCE, o)];
-  const ident = garder(valsIdentite(p), gP);
-  const lignes = seances.length ? seances.map(c => [...ident, ...garder(valsSeance(c), gS)]) : [[...ident, ...garder(COL_SEANCE.map(() => ''), gS)]];
-  const blocs = [{ k: 'h1', t: p.nom }, { k: 'meta', t: `Dossier exporté le ${frDate(aujourdhui())}${filtreTxt(o) ? ' · ' + filtreTxt(o) : ''}` }];
+  const ident = garder(valsIdentite(p, o.anonyme), gP);
+  const lignes = seances.length ? seances.map(c => [...ident, ...garder(valsSeance(c, o.anonyme), gS)]) : [[...ident, ...garder(COL_SEANCE.map(() => ''), gS)]];
+  const blocs = [{ k: 'h1', t: o.anonyme ? `Dossier anonymisé · patient n° ${p.id}` : p.nom }, { k: 'meta', t: `Dossier exporté le ${frDate(aujourdhui())}${filtreTxt(o) ? ' · ' + filtreTxt(o) : ''}` }];
   if (o.inclure.has('infos')) blocs.push({ k: 'h2', t: 'Informations' }, { k: 'kv', rows: [['Civilité', p.civilite === 'M' ? 'M.' : p.civilite === 'Mme' ? 'Mme' : ''], ['Date de naissance', p.date_naissance ? `${frDate(p.date_naissance)} (${p.age_texte})` : ''], ['Type', p.type],
     ['Statut', p.archive_le ? `archivé depuis le ${frDate(p.archive_le.slice(0, 10))}` : p.statut], ['Précision', p.complement], ['Téléphone', p.telephone], ['E-mail', p.email], ['Autres coordonnées', p.contact], ['Notes pratiques', p.notes]].filter(r => r[1]) });
-  if (o.inclure.has('liens') && p.liens.length) blocs.push({ k: 'h2', t: 'Liens familiaux' }, { k: 'list', items: p.liens.map(l => l.sens === 'parent' ? `${l.role} : ${l.autre_nom}` : `Enfant / ado : ${l.autre_nom} (${l.role})`) });
+  else blocs.push({ k: 'h2', t: 'Informations' }, { k: 'kv', rows: [['Type', p.type], ['Statut', p.archive_le ? `archivé depuis le ${frDate(p.archive_le.slice(0, 10))}` : p.statut]].filter(r => r[1]) });
+  if (o.inclure.has('liens') && p.liens.length) blocs.push({ k: 'h2', t: 'Liens familiaux' }, { k: 'list', items: p.liens.map(l => o.anonyme ? (l.sens === 'parent' ? l.role : `Enfant / ado (${l.role})`) : l.sens === 'parent' ? `${l.role} : ${l.autre_nom}` : `Enfant / ado : ${l.autre_nom} (${l.role})`) });
   if (o.inclure.has('ressources') && p.ressources.length) blocs.push({ k: 'h2', t: 'Ressources (liens)' }, { k: 'list', items: p.ressources.map(d => `${d.titre} — ${d.url}` + (d.consultation_id ? ` (séance du ${frDate(d.seance_date)})` : '')) });
   if (o.inclure.has('liens') && p.accompagnements && p.accompagnements.length) {
     const acc = filtreSeances(p.accompagnements, o);
-    if (acc.length) blocs.push({ k: 'h2', t: 'Séances en tant qu’accompagnant' }, { k: 'list', items: acc.map(c => `${frDate(c.date)} à ${c.heure} : accompagnait ${c.pour_nom} (${c.statut})`) });
+    if (acc.length) blocs.push({ k: 'h2', t: 'Séances en tant qu’accompagnant' }, { k: 'list', items: acc.map(c => `${frDate(c.date)} à ${c.heure} : accompagnait ${o.anonyme ? 'un autre patient' : c.pour_nom} (${c.statut})`) });
   }
   blocs.push({ k: 'h2', t: `Séances (${seances.length})` });
   if (!seances.length) blocs.push({ k: 'p', t: 'Aucune séance pour ces critères.' });
@@ -946,7 +952,7 @@ function dossierPatient(p, o) {
 route('GET', '/api/patients/:id/export', ({ m, url }) => {
   const o = optionsExport(url), p = patientComplet(m[1]);
   const d = dossierPatient(p, o);
-  return sortie(o.format, `Dossier-${slug(p.nom)}-${aujourdhui()}`, d.entetes, d.lignes, `Dossier ${p.nom}`, d.blocs);
+  return sortie(o.format, o.anonyme ? `Dossier-anonyme-${p.id}-${aujourdhui()}` : `Dossier-${slug(p.nom)}-${aujourdhui()}`, d.entetes, d.lignes, o.anonyme ? `Dossier anonymisé n° ${p.id}` : `Dossier ${p.nom}`, d.blocs);
 });
 
 route('GET', '/api/consultations/:id/export', ({ m, url }) => {
@@ -954,14 +960,15 @@ route('GET', '/api/consultations/:id/export', ({ m, url }) => {
   const c = get(`SELECT c.*, ${NOMC('p')} AS patient_nom, p.date_naissance AS patient_dn, p.complement AS patient_complement FROM consultations c JOIN patients p ON p.id=c.patient_id WHERE c.id=?`, m[1]);
   if (!c) throw httpErr(404, 'Consultation introuvable');
   const cc = consultOut(c), liens = ressourcesDeLaSeance(cc.id), fin = o.inclure.has('finances');
-  const blocs = [{ k: 'h1', t: `Séance du ${frDate(cc.date)}` }, { k: 'meta', t: `${c.patient_nom} · exportée le ${frDate(aujourdhui())}` },
-    { k: 'kv', rows: [['Patient', c.patient_nom], ['Date', `${frDate(cc.date)} à ${cc.heure}`], ['Durée', cc.duree ? cc.duree + ' min' : ''], ['Mode', cc.mode], ['Statut', cc.statut],
-      ...(fin ? [['Tarif', cc.tarif ? cc.tarif + ' €' : ''], ['Règlement', cc.paye ? 'payée' + (cc.mode_paiement ? ' (' + cc.mode_paiement + ')' : '') : 'non payée'], ['Facturé à', cc.facture_a]] : []),
-      ['Personnes présentes', presentsTxt(cc)]].filter(r => r[1]) }];
+  const blocs = [{ k: 'h1', t: `Séance du ${frDate(cc.date)}` }, { k: 'meta', t: `${o.anonyme ? `Patient n° ${c.patient_id} (anonymisé)` : c.patient_nom} · exportée le ${frDate(aujourdhui())}` },
+    { k: 'kv', rows: [...(o.anonyme ? [] : [['Patient', c.patient_nom]]), ['Date', `${frDate(cc.date)} à ${cc.heure}`], ['Durée', cc.duree ? cc.duree + ' min' : ''], ['Mode', cc.mode], ['Statut', cc.statut],
+      ...(fin ? [['Tarif', cc.tarif ? cc.tarif + ' €' : ''], ['Règlement', cc.paye ? 'payée' + (cc.mode_paiement ? ' (' + cc.mode_paiement + ')' : '') : 'non payée'], ['Facturé à', o.anonyme && cc.facture_a ? 'un tiers' : cc.facture_a]] : []),
+      ['Personnes présentes', presentsTxt(cc, o.anonyme)]].filter(r => r[1]) }];
   if (o.inclure.has('ressources') && liens.length) blocs.push({ k: 'h2', t: 'Ressources (liens)' }, { k: 'list', items: liens.map(d => `${d.titre} — ${d.url}`) });
   if (o.inclure.has('notes')) blocs.push({ k: 'h2', t: 'Notes de séance' }, X.texteBrut(cc.contenu) ? { k: 'rich', html: cc.contenu } : { k: 'p', t: 'Aucune note.' });
-  const cols = [[null, 'Patient'], ...COL_SEANCE], g = gardees(cols, o);
-  return sortie(o.format, `Seance-${slug(c.patient_nom)}-${cc.date}`, garder(cols.map(x => x[1]), g), [garder([c.patient_nom, ...valsSeance(cc)], g)], `Séance du ${frDate(cc.date)} – ${c.patient_nom}`, blocs);
+  const cols = [[null, o.anonyme ? 'Patient n°' : 'Patient'], ...COL_SEANCE], g = gardees(cols, o);
+  return sortie(o.format, o.anonyme ? `Seance-anonyme-${c.patient_id}-${cc.date}` : `Seance-${slug(c.patient_nom)}-${cc.date}`, garder(cols.map(x => x[1]), g), [garder([o.anonyme ? c.patient_id : c.patient_nom, ...valsSeance(cc, o.anonyme)], g)],
+    o.anonyme ? `Séance du ${frDate(cc.date)} – patient n° ${c.patient_id}` : `Séance du ${frDate(cc.date)} – ${c.patient_nom}`, blocs);
 });
 
 // Tableaux complets (comptabilité, archivage) : tous les patients / toutes les séances, avec les mêmes options
@@ -969,15 +976,15 @@ route('GET', '/api/export/patients.csv', ({ url }) => {
   const o = optionsExport(url), gP = gardees(COL_PATIENT, o), fin = o.inclure.has('finances');
   const lignes = all('SELECT id FROM patients ORDER BY (archive_le IS NOT NULL), nom COLLATE NOCASE, prenom COLLATE NOCASE').map(({ id }) => {
     const p = patientComplet(id), r = filtreSeances(p.consultations, { ...o, statuts: ['réalisée'] });
-    return [...garder(valsIdentite(p), gP), r.length, r[0] ? r[0].date : '', ...(fin ? [r.filter(c => !c.paye).reduce((t, c) => t + (c.tarif || 0), 0)] : [])];
+    return [...garder(valsIdentite(p, o.anonyme), gP), r.length, r[0] ? r[0].date : '', ...(fin ? [r.filter(c => !c.paye).reduce((t, c) => t + (c.tarif || 0), 0)] : [])];
   });
   return fichier(X.csv([...enTetes(COL_PATIENT, o), 'Séances réalisées', 'Dernière séance', ...(fin ? ['Reste à régler (€)'] : [])], lignes), 'text/csv; charset=utf-8', `Patients-${aujourdhui()}.csv`);
 });
 route('GET', '/api/export/consultations.csv', ({ url }) => {
-  const o = optionsExport(url), g = gardees([[null, 'Patient'], ...COL_SEANCE], o);
+  const o = optionsExport(url), g = gardees([[null, o.anonyme ? 'Patient n°' : 'Patient'], ...COL_SEANCE], o);
   const lignes = filtreSeances(all(`SELECT c.*, ${NOMC('p')} AS patient_nom, p.date_naissance AS patient_dn, p.complement AS patient_complement FROM consultations c JOIN patients p ON p.id=c.patient_id ORDER BY c.date, c.heure`).map(c => ({ ...consultOut(c), patient_nom: c.patient_nom })), o)
-    .map(c => garder([c.patient_nom, ...valsSeance(c)], g));
-  return fichier(X.csv(garder(['Patient', ...COL_SEANCE.map(c => c[1])], g), lignes), 'text/csv; charset=utf-8', `Seances-${aujourdhui()}.csv`);
+    .map(c => garder([o.anonyme ? c.patient_id : c.patient_nom, ...valsSeance(c, o.anonyme)], g));
+  return fichier(X.csv(garder([o.anonyme ? 'Patient n°' : 'Patient', ...COL_SEANCE.map(c => c[1])], g), lignes), 'text/csv; charset=utf-8', `Seances-${aujourdhui()}.csv`);
 });
 
 // ---------- Corbeille ----------

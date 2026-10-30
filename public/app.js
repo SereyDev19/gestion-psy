@@ -503,10 +503,10 @@ document.addEventListener('click', async e => {
 function exportModal(kind, base) {
   const STATUTS = ['planifiée', 'réalisée', 'absence', 'annulée'];
   const OPT = {
-    patient: [['infos', 'Informations du patient (coordonnées, naissance…)'], ['liens', 'Liens familiaux'], ['ressources', 'Ressources (liens web)'], ['notes', 'Notes des séances'], ['finances', 'Tarifs et paiements']],
-    seance: [['notes', 'Notes de la séance'], ['ressources', 'Ressources (liens web)'], ['finances', 'Tarifs et paiements']],
-    patients: [['infos', 'Coordonnées et identité'], ['liens', 'Liens familiaux'], ['finances', 'Montant restant à régler']],
-    seances: [['notes', 'Notes des séances'], ['finances', 'Tarifs et paiements']],
+    patient: [['infos', 'Identité et coordonnées du patient (nom, prénom, téléphone, e-mail, naissance…)'], ['liens', 'Liens familiaux'], ['ressources', 'Ressources (liens web)'], ['notes', 'Notes des séances'], ['finances', 'Tarifs et paiements']],
+    seance: [['infos', 'Nom du patient'], ['notes', 'Notes de la séance'], ['ressources', 'Ressources (liens web)'], ['finances', 'Tarifs et paiements']],
+    patients: [['infos', 'Identité et coordonnées (nom, prénom, téléphone, e-mail, naissance…)'], ['liens', 'Liens familiaux'], ['finances', 'Montant restant à régler']],
+    seances: [['infos', 'Nom du patient'], ['notes', 'Notes des séances'], ['finances', 'Tarifs et paiements']],
   }[kind];
   const csvSeul = kind === 'patients' || kind === 'seances';
   const avecPeriode = kind !== 'seance', avecStatuts = kind === 'patient' || kind === 'seances';
@@ -517,7 +517,9 @@ function exportModal(kind, base) {
     ${avecPeriode ? `<div class="field"><label>${kind === 'patients' ? 'Période prise en compte pour les séances' : 'Période des séances'} <span class="muted tiny">(vide = toutes)</span></label>
       <div class="fields"><div class="field"><label class="tiny muted">Du</label><input type="date" name="du"></div><div class="field"><label class="tiny muted">Au</label><input type="date" name="au"></div></div></div>` : ''}
     ${avecStatuts ? `<div class="field"><label>Statuts des séances</label><div class="pills">${STATUTS.map(x => `<label class="chip on"><input type="checkbox" name="st" value="${x}" hidden checked>${x}</label>`).join('')}</div></div>` : ''}
-    <div class="field"><label>Contenu à inclure</label>${OPT.map(([k, l]) => `<label class="check"><input type="checkbox" name="inc" value="${k}" checked> ${l}</label>`).join('')}</div>`,
+    <div class="field"><label>Contenu à inclure</label>${OPT.map(([k, l]) => `<label class="check"><input type="checkbox" name="inc" value="${k}" checked> ${l}</label>`).join('')}
+      <div class="dbl" id="anonmsg" hidden style="margin:12px 0 0"><b>Export anonyme.</b> Le nom du patient et ses coordonnées sont retirés (le patient devient un simple numéro, ses proches un rôle).
+        <span class="muted tiny" style="display:block;margin-top:4px">Attention : les notes de séance et les ressources peuvent contenir des noms ou des chemins de fichiers. Décochez-les aussi pour un export totalement anonyme.</span></div></div>`,
     fd => {
       const p = new URLSearchParams();
       p.set('format', csvSeul ? 'csv' : fd.get('fmt'));
@@ -527,6 +529,8 @@ function exportModal(kind, base) {
       const url = base + (base.includes('?') ? '&' : '?') + p.toString();
       if (!csvSeul && fd.get('fmt') === 'pdf') window.open(url, '_blank'); else location.href = url;     // PDF : page prête à imprimer
     }, 'Exporter');
+  const inf = document.querySelector('.modal input[name=inc][value=infos]');
+  if (inf) inf.addEventListener('change', () => { $('#anonmsg').hidden = inf.checked; });
   // Les « puces » (format, statuts) se comportent comme des cases / boutons radio
   document.querySelectorAll('.modal .chip input').forEach(inp => inp.addEventListener('change', () => {
     if (inp.type === 'radio') document.querySelectorAll('#xfmt .chip').forEach(c => c.classList.toggle('on', c.contains(inp) ? inp.checked : false));

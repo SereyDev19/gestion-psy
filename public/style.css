@@ -4,9 +4,9 @@
   --brand: #9e6bc0; --rose: #e4d2d2;
   --accent: #8650a8; --accent-ink: #fff; --accent-soft: #f0e7f6;      /* violet de la charte, légèrement assombri pour que le texte blanc reste lisible */
   --warn: #b5733a; --warn-soft: #f7e9d8; --danger: #a9473f; --blue-soft: #e3ebf4; --blue: #43607f;
-  --surface: #ffffff; --hover: var(--hover); --soft: var(--soft); --soft2: var(--soft2); --line2: var(--line2); --side-hover: #dccfd4; --side-ink: #4a463e; --side-ink2: #6f6a5d;
-  --ink2: #5b565b; --accent-ink2: #5e3480; --muted2: #948e95; --yellow-soft: var(--yellow-soft); --yellow-line: var(--yellow-line); --red-soft: #fbeeee; --red-line: var(--red-line); --red-ink: var(--red-ink);
-  --violet-soft2: var(--violet-soft2); --rose-soft: #f1e7e7;
+  --surface: #ffffff; --hover: #faf8fa; --soft: #efe9ec; --soft2: #e4dde2; --line2: #b9b3bd; --side-hover: #dccfd4; --side-ink: #4a463e; --side-ink2: #6f6a5d;
+  --ink2: #5b565b; --accent-ink2: #5e3480; --muted2: #948e95; --yellow-soft: #fbf6e6; --yellow-line: #e5d6a7; --red-soft: #fbeeee; --red-line: #e2b3b3; --red-ink: #a23b3b;
+  --violet-soft2: #faf6fc; --rose-soft: #f1e7e7;
   --radius: 12px; --shadow: 0 1px 2px rgba(40,30,50,.06), 0 4px 14px rgba(40,30,50,.06);
 }
 * { box-sizing: border-box; }

@@ -118,7 +118,7 @@ function changerDossier() {
   if (existante) { cfg.dataDir = p; cfg.initialise = true; delete cfg.deplacement; }
   else cfg.deplacement = { de: dataDir, vers: p };
   ecrireConfig(cfg);
-  setTimeout(() => { app.relaunch(); app.exit(0); }, 600);   // laisse partir la réponse à la page Paramètres
+  setTimeout(() => { app.releaseSingleInstanceLock(); app.relaunch(); app.exit(0); }, 600);   // laisse partir la réponse à la page Paramètres
   return 'redemarrage';
 }
 

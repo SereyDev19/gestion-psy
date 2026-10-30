@@ -125,7 +125,7 @@ function changerDossier() {
   }
   cfg.dataDir = p; cfg.initialise = true; delete cfg.deplacement;
   ecrireConfig(cfg);
-  setTimeout(() => { app.releaseSingleInstanceLock(); app.relaunch(); app.exit(0); }, 600);   // laisse partir la réponse à la page Paramètres
+  setTimeout(() => { delete process.env.DATA_DIR; app.releaseSingleInstanceLock(); app.relaunch(); app.exit(0); }, 600);   // DATA_DIR est posée par nous au démarrage : la retirer, sinon la nouvelle instance l'hérite et ignore config.json   // laisse partir la réponse à la page Paramètres
   return { etat: 'redemarrage' };
 }
 

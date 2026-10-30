@@ -833,7 +833,8 @@ async function viewParametres() {
     const b = $('#dirbtn'); b.disabled = true;
     try {
       const r = await api('POST', '/api/dossier-donnees/changer');
-      if (r.etat === 'redemarrage') { $('#dirmsg').textContent = 'Redémarrage de l’application…'; return; }
+      if (r.etat === 'redemarrage') { $('#dirmsg').textContent = 'Données copiées. Redémarrage de l’application… (si elle ne se rouvre pas, relancez-la à la main)'; return; }
+      if (r.etat === 'erreur') $('#dirmsg').textContent = r.message;
     } catch (e) { $('#dirmsg').textContent = (e && e.message) || 'Changement impossible.'; }
     b.disabled = false;
   };

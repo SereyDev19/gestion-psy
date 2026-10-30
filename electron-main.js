@@ -102,24 +102,31 @@ function trouverDossier() {
 }
 
 // Menu Aide > Changer le dossier des données : la copie est faite au redémarrage suivant (base fermée, donc cohérente)
-// Renvoie 'annule' | 'identique' | 'redemarrage' (appelée aussi depuis Paramètres, via global.gestionPsyDossier)
+// Renvoie { etat: 'annule' | 'identique' | 'erreur' | 'redemarrage', message } (appelée aussi depuis Paramètres, via global.gestionPsyDossier)
+// La copie se fait tout de suite, base ouverte (instantané cohérent), avec vérification : en cas d'échec l'erreur est affichée et rien ne change.
 function changerDossier() {
   const p = choisirDossier('Nouveau dossier des données');
-  if (!p) return 'annule';
-  if (path.resolve(p) === path.resolve(dataDir)) { ui.boite({ message: 'C’est déjà le dossier utilisé.', buttons: ['OK'] }); return 'identique'; }
+  if (!p) return { etat: 'annule' };
+  if (path.resolve(p) === path.resolve(dataDir)) { ui.boite({ message: 'C’est déjà le dossier utilisé.', buttons: ['OK'] }); return { etat: 'identique' }; }
   const existante = aUneBase(p);
   const r = ui.boite({ type: 'question', buttons: ['Continuer', 'Annuler'], defaultId: 0, cancelId: 1,
     message: existante ? 'Ce dossier contient déjà une base de données' : 'Déplacer les données ?',
     detail: existante
       ? `Gestion Psy utilisera telle quelle la base trouvée dans :\n${p}\n\nLa base actuelle (${dataDir}) n'est pas modifiée.`
       : `Vos données seront copiées dans :\n${p}\n\nGestion Psy redémarre ensuite. L'ancien dossier n'est PAS effacé : il contient encore les données des patients. Supprimez-le vous-même une fois que tout fonctionne.` });
-  if (r !== 0) return 'annule';
+  if (r !== 0) return { etat: 'annule' };
   const cfg = lireConfig();
-  if (existante) { cfg.dataDir = p; cfg.initialise = true; delete cfg.deplacement; }
-  else cfg.deplacement = { de: dataDir, vers: p };
+  if (!existante) {
+    try { global.gestionPsyCopier(p); }
+    catch (e) {
+      ui.boite({ type: 'error', message: 'La copie des données a échoué', detail: `${e.message}\n\nVos données n'ont pas bougé : elles restent dans\n${dataDir}`, buttons: ['OK'] });
+      return { etat: 'erreur', message: `La copie a échoué : ${e.message}` };
+    }
+  }
+  cfg.dataDir = p; cfg.initialise = true; delete cfg.deplacement;
   ecrireConfig(cfg);
   setTimeout(() => { app.releaseSingleInstanceLock(); app.relaunch(); app.exit(0); }, 600);   // laisse partir la réponse à la page Paramètres
-  return 'redemarrage';
+  return { etat: 'redemarrage' };
 }
 
 // Si le dossier disparaît pendant l'utilisation (volume démonté de force, disque débranché) : on le dit et on ferme, plutôt que d'écrire dans le vide

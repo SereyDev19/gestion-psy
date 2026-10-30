@@ -1020,6 +1020,22 @@ route('GET', '/api/sauvegarde', () => {
     headers: { 'Content-Disposition': `attachment; filename="cabinet-${new Date().toISOString().slice(0, 10)}.db"` } };
 });
 
+// Copie complète des données vers un autre dossier (appelée par l'enveloppe Electron, base ouverte) : instantané cohérent + dossier sauvegardes, puis vérification
+global.gestionPsyCopier = vers => {
+  fs.mkdirSync(vers, { recursive: true });
+  const cible = path.join(vers, 'cabinet.db');
+  if (fs.existsSync(cible)) throw new Error('Le dossier de destination contient déjà une base.');
+  db.exec(`VACUUM INTO '${cible.replace(/'/g, "''")}'`);
+  const src = path.join(DATA_DIR, 'sauvegardes');
+  if (fs.existsSync(src)) fs.cpSync(src, path.join(vers, 'sauvegardes'), { recursive: true });
+  const copie = new DatabaseSync(cible);
+  try {
+    const n = t => copie.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c, m = t => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c;
+    for (const t of ['patients', 'consultations']) if (n(t) !== m(t)) throw new Error(`Vérification échouée (${t}).`);
+    return { patients: n('patients'), consultations: n('consultations') };
+  } finally { copie.close(); }
+};
+
 function httpErr(status, message) { return Object.assign(new Error(message), { status }); }
 
 
@@ -1129,7 +1145,7 @@ route('POST', '/api/parametres/rappel-repousse', () => { setReglage('rappel_repo
 // Mise à jour de l'application (Windows installé) : le programme Electron enregistre global.gestionPsyMaj ; en mode web / Mac / développement, c'est indisponible.
 route('POST', '/api/dossier-donnees/changer', () => {
   if (!global.gestionPsyDossier) throw httpErr(400, 'Disponible dans l’application de bureau uniquement.');
-  return { etat: global.gestionPsyDossier.changer() };
+  return global.gestionPsyDossier.changer();
 });
 route('GET', '/api/mise-a-jour', () => ({ version: require('./package.json').version, auto: !!(global.gestionPsyMaj && global.gestionPsyMaj.actif) }));
 route('POST', '/api/mise-a-jour/verifier', async () => global.gestionPsyMaj ? global.gestionPsyMaj.verifier(true)

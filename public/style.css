@@ -308,3 +308,12 @@ h1.idname { font-size: 36px; line-height: 1.15; letter-spacing: -.02em; }
 input.invalide { border-color: var(--danger) !important; background: #fdf3f2; }
 .fmtmsg { color: var(--danger); margin-top: 3px; min-height: 0; }
 .fmtmsg:empty { display: none; }
+
+/* Séances où la personne accompagnait (fiche d'un proche) */
+.timeline .item.acc { background: var(--accent-soft); border-left: 4px solid var(--brand); padding-left: 10px; border-radius: 0 8px 8px 0; }
+.timeline .item.acc:hover { background: #e9dcf3; }
+.timeline .item.acc .date, .timeline .item.acc .meta { opacity: .9; }
+.badge.acc { background: var(--brand); color: #fff; }
+.accfor { margin-top: 3px; font-size: 14px; }
+.accfor a { font-weight: 600; text-decoration: underline; text-decoration-color: var(--brand); }
+.acclegend { font-size: 13px; color: var(--muted); padding: 2px 0 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }

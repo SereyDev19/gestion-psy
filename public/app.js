@@ -659,13 +659,26 @@ async function viewPatient(m) {
       <div class="headbtns">${exportBtn('patient', `/api/patients/${id}/export`)}<button class="btn" id="edit">Modifier</button> ${p.archive_le ? '<button class="btn primary" id="unarchive">Désarchiver</button>' : '<button class="btn primary" id="newc">+ Nouvelle séance</button>'}</div></div>
     <div class="grid2">
       <div class="card"><h2>Consultations</h2><div class="timeline" id="tl">
-        ${p.consultations.length ? p.consultations.map(c => `
+        ${(() => {
+          // Ses propres séances + celles où il / elle accompagnait quelqu'un d'autre (repérées par une pastille et une couleur), par ordre chronologique inverse
+          const acc = (p.accompagnements || []).map(c => ({ ...c, acc: true }));
+          const tout = [...p.consultations, ...acc].sort((x, y) => (y.date + y.heure).localeCompare(x.date + x.heure));
+          if (!tout.length) return '<div class="empty">Aucune consultation pour l’instant.</div>';
+          return (acc.length ? `<div class="acclegend"><span class="badge acc">Accompagnant</span> séance faite pour une autre personne : ${esc(p.prenom || p.nom)} était présent(e) mais n’était pas le patient.</div>` : '')
+            + tout.map(c => c.acc ? `
+          <div class="item acc" data-id="${c.id}" title="Séance de ${esc(c.pour_nom)} : ${esc(p.nom)} accompagnait">
+            <div class="date">${fmtDate(c.date)}</div>
+            <div style="min-width:0"><div class="meta">${esc(c.heure)} · ${esc(c.mode)}</div>
+              <div class="accfor"><span class="badge acc">Accompagnant</span> pour <a href="#/patient/${c.pour_id}" data-stop>${esc(c.pour_nom)}</a></div></div>
+            <div class="badges">${statutBadge(c.statut)}</div>
+          </div>` : `
           <div class="item" data-id="${c.id}">
             <div class="date">${fmtDate(c.date)}</div>
             <div style="min-width:0"><div class="meta">${esc(c.heure)} · ${esc(c.mode)}${c.autres_presents.length ? ' · avec ' + esc(c.autres_presents.join(', ')) : ''}</div>
               ${strip(c.contenu) ? `<div class="snip">${esc(strip(c.contenu))}</div>` : ''}</div>
             <div class="badges">${c.statut === 'réalisée' && !c.paye ? '<span class="badge warn">À régler</span>' : ''}${statutBadge(c.statut)}</div>
-          </div>`).join('') : '<div class="empty">Aucune consultation pour l’instant.</div>'}
+          </div>`).join('');
+        })()}
       </div></div>
       <div>
         <div class="card" style="margin-bottom:18px"><h2>Informations</h2>
@@ -698,7 +711,7 @@ async function viewPatient(m) {
     </div>`;
   $('#edit').onclick = () => patientModal(p);
   mountRessources($('#res-p'), 'patients', id, p.ressources);
-  document.querySelectorAll('#tl .item').forEach(i => i.onclick = () => location.hash = '#/consultation/' + i.dataset.id);
+  document.querySelectorAll('#tl .item').forEach(i => i.onclick = e => { if (e.target.closest('[data-stop]')) return; location.hash = '#/consultation/' + i.dataset.id; });
   $('#pnotes').onchange = e => api('PUT', '/api/patients/' + id, { notes: e.target.value }).then(() => toast('Notes enregistrées'));
   document.querySelectorAll('[data-unlink]').forEach(b => b.onclick = async () => { await api('DELETE', '/api/liens/' + b.dataset.unlink); render(); });
   $('#addparent').onclick = () => lierPersonne(p, 'parent');

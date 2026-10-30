@@ -1,6 +1,6 @@
 {
   "name": "cabinet-psy",
-  "version": "0.22.0",
+  "version": "0.22.1",
   "private": true,
   "description": "Gestion locale patients / consultations",
   "scripts": {

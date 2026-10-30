@@ -482,6 +482,10 @@ const patientComplet = id => {
                    FROM liens l JOIN patients o ON o.id = l.patient_id WHERE l.proche_id = ?
                  ORDER BY 2, 5 COLLATE NOCASE`, p.id, p.id);
   p.consultations = all('SELECT * FROM consultations WHERE patient_id=? ORDER BY date DESC, heure DESC', p.id).map(consultOut);
+  // Séances d'AUTRES patients où cette personne est notée « présente » (elle accompagnait) : sans les notes ni les montants de l'autre patient
+  p.accompagnements = all(`SELECT c.id, c.date, c.heure, c.duree, c.mode, c.statut, c.patient_id AS pour_id, ${NOMC('o')} AS pour_nom
+                           FROM consultations c JOIN patients o ON o.id = c.patient_id
+                           WHERE c.patient_id <> ? AND c.presents LIKE ? ORDER BY c.date DESC, c.heure DESC`, p.id, `%"p:${p.id}"%`);
   p.ressources = ressourcesDuPatient(p.id);
   p.dernier_tarif = p.consultations.length ? all('SELECT tarif FROM consultations WHERE patient_id=? ORDER BY date DESC, id DESC LIMIT 1', p.id)[0].tarif : null;
   return p;
@@ -886,6 +890,10 @@ function dossierPatient(p, o) {
     ['Statut', p.archive_le ? `archivé depuis le ${frDate(p.archive_le.slice(0, 10))}` : p.statut], ['Précision', p.complement], ['Téléphone', p.telephone], ['E-mail', p.email], ['Autres coordonnées', p.contact], ['Notes pratiques', p.notes]].filter(r => r[1]) });
   if (o.inclure.has('liens') && p.liens.length) blocs.push({ k: 'h2', t: 'Liens familiaux' }, { k: 'list', items: p.liens.map(l => l.sens === 'parent' ? `${l.role} : ${l.autre_nom}` : `Enfant / ado : ${l.autre_nom} (${l.role})`) });
   if (o.inclure.has('ressources') && p.ressources.length) blocs.push({ k: 'h2', t: 'Ressources (liens)' }, { k: 'list', items: p.ressources.map(d => `${d.titre} — ${d.url}` + (d.consultation_id ? ` (séance du ${frDate(d.seance_date)})` : '')) });
+  if (o.inclure.has('liens') && p.accompagnements && p.accompagnements.length) {
+    const acc = filtreSeances(p.accompagnements, o);
+    if (acc.length) blocs.push({ k: 'h2', t: 'Séances en tant qu’accompagnant' }, { k: 'list', items: acc.map(c => `${frDate(c.date)} à ${c.heure} : accompagnait ${c.pour_nom} (${c.statut})`) });
+  }
   blocs.push({ k: 'h2', t: `Séances (${seances.length})` });
   if (!seances.length) blocs.push({ k: 'p', t: 'Aucune séance pour ces critères.' });
   for (const c of seances) blocs.push(...blocSeance(c, `Séance du ${frDate(c.date)} à ${c.heure}`, o));

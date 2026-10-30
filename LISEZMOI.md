@@ -36,6 +36,7 @@
 - Choix du patient (nouvelle séance depuis l'onglet Consultations) : fenêtre centrale avec recherche instantanée (nom, prénom, téléphone, e-mail ; sans accents ni majuscules), filtres par statut, âge (adultes / mineurs) et « Récents ». Fait pour des centaines de patients : 50 résultats affichés à la fois, navigation au clavier (↑ ↓ Entrée).
 - Personnes présentes (page d'une séance) : on coche le patient et les **personnes qui lui sont liées** (parents, responsables, proches, enfants), plus « Autre personne ».
   Le bouton « + Lier une personne » crée une nouvelle personne (enregistrée comme **proche, non suivi**) ou relie quelqu'un déjà enregistré (qui garde son statut), et la coche comme présente.
+- Fiche d'un proche : les séances où il était présent comme **accompagnant** d'un autre patient apparaissent dans sa chronologie avec une étiquette violette « Accompagnant » et le nom de la personne accompagnée (lien cliquable). Aucune note de l'autre patient n'est affichée. Ses propres séances restent affichées normalement.
 - Ressources : on joint des **liens web** (un ou plusieurs) à un patient ou à une séance (pas de fichiers : rien n'est stocké dans l'appli).
 - **Doublons et homonymes** : en créant ou modifiant une fiche (et en « Lier une personne »), l'appli compare avec les fiches existantes (accents, majuscules, ordre prénom/nom et petite faute de frappe ignorés ; téléphone et e-mail normalisés).
   - *Ressemblance simple* (même nom) : un message d'information, on enregistre normalement (les homonymes sont autorisés).

@@ -190,7 +190,84 @@ const MIGRATIONS = [
      origine TEXT NOT NULL DEFAULT 'modification'             -- modification | avant-restauration | avant-fusion
    );
    CREATE INDEX idx_pcv ON patient_cr_versions(patient_id, id);`,
-  // v13, v14… : ajouter ici, par exemple :
+  // v13 : annuaire des professionnels avec qui la psychologue échange (orientation, coordination) et leurs réunions.
+  //        Catégories (liste modifiable) en choix multiple ; une réunion peut avoir plusieurs professionnels ; historique des notes de réunion.
+  `CREATE TABLE professionnels (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     nom TEXT NOT NULL DEFAULT '',
+     prenom TEXT NOT NULL DEFAULT '',
+     structure TEXT NOT NULL DEFAULT '',
+     telephone TEXT NOT NULL DEFAULT '',
+     email TEXT NOT NULL DEFAULT '',
+     adresse TEXT NOT NULL DEFAULT '',
+     site_web TEXT NOT NULL DEFAULT '',
+     notes TEXT NOT NULL DEFAULT '',
+     archive_le TEXT,
+     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+   );
+   CREATE TABLE categories_pro (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     nom TEXT NOT NULL UNIQUE COLLATE NOCASE
+   );
+   CREATE TABLE pro_categories (
+     pro_id INTEGER NOT NULL REFERENCES professionnels(id) ON DELETE CASCADE,
+     categorie_id INTEGER NOT NULL REFERENCES categories_pro(id) ON DELETE CASCADE,
+     PRIMARY KEY (pro_id, categorie_id)
+   );
+   CREATE TABLE reunions (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     date TEXT NOT NULL,                                -- AAAA-MM-JJ
+     heure TEXT NOT NULL DEFAULT '',
+     duree INTEGER NOT NULL DEFAULT 30,                 -- minutes
+     format TEXT NOT NULL DEFAULT 'téléphone',          -- téléphone | e-mail | visio | présentiel | autre
+     statut TEXT NOT NULL DEFAULT 'planifiée',          -- planifiée | réalisée | annulée
+     objet TEXT NOT NULL DEFAULT '',
+     contenu TEXT NOT NULL DEFAULT '',                  -- notes (HTML)
+     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+   );
+   CREATE TABLE reunion_pros (
+     reunion_id INTEGER NOT NULL REFERENCES reunions(id) ON DELETE CASCADE,
+     pro_id INTEGER NOT NULL REFERENCES professionnels(id) ON DELETE CASCADE,
+     PRIMARY KEY (reunion_id, pro_id)
+   );
+   CREATE TABLE reunion_versions (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     reunion_id INTEGER NOT NULL REFERENCES reunions(id) ON DELETE CASCADE,
+     contenu TEXT NOT NULL,
+     enregistre_le TEXT NOT NULL DEFAULT (datetime('now')),
+     origine TEXT NOT NULL DEFAULT 'modification'
+   );
+   CREATE INDEX idx_reunions_date ON reunions(date);
+   CREATE INDEX idx_rp_pro ON reunion_pros(pro_id);
+   CREATE INDEX idx_rv ON reunion_versions(reunion_id, id);
+   INSERT INTO categories_pro (nom) VALUES
+     ('Acupuncteur'),
+     ('Assistante sociale'),
+     ('Conseiller d''orientation'),
+     ('Diététicien'),
+     ('Enseignant'),
+     ('Ergothérapeute'),
+     ('Éducateur spécialisé'),
+     ('Hypnothérapeute'),
+     ('Infirmière'),
+     ('Infirmière scolaire'),
+     ('Kinésithérapeute'),
+     ('Médecin généraliste'),
+     ('Médecin scolaire'),
+     ('Neurologue'),
+     ('Neuropsychologue'),
+     ('Orthophoniste'),
+     ('Orthoptiste'),
+     ('Ostéopathe'),
+     ('Pédiatre'),
+     ('Pédopsychiatre'),
+     ('Psychiatre'),
+     ('Psychologue'),
+     ('Psychomotricien'),
+     ('Psychothérapeute'),
+     ('Sage-femme'),
+     ('Sophrologue');`,
+  // v14, v15… : ajouter ici, par exemple :
   // `ALTER TABLE consultations ADD COLUMN lieu TEXT DEFAULT ''`,
 ];
 if (process.env.EXTRA_MIGRATION) MIGRATIONS.push(process.env.EXTRA_MIGRATION); // réservé aux tests
@@ -638,6 +715,8 @@ route('GET', '/api/accueil', () => {
     prochaines: all(`${base} WHERE c.statut='planifiée' AND c.date>? ORDER BY c.date, c.heure LIMIT 6`, t).map(consultOut),
     a_completer: { n: aCompleter, liste: all(`${base} WHERE c.statut='planifiée' AND c.date<? ORDER BY c.date DESC, c.heure DESC LIMIT 8`, t).map(consultOut) },
     impayes: { n: impayes.n, total: impayes.total },
+    reunions_aujourdhui: reunionsListe(`r.date=? AND r.statut<>'annulée'`, [t]).reverse(),
+    reunions_prochaines: reunionsListe(`r.statut='planifiée' AND r.date>?`, [t]).reverse().slice(0, 5),
     a_revoir: all(`SELECT p.id, ${NOMC('p')} AS nom, l.d AS derniere FROM patients p
         JOIN (SELECT patient_id, MAX(date) d FROM consultations WHERE statut='réalisée' GROUP BY patient_id) l ON l.patient_id = p.id
         WHERE p.statut='suivi en cours' AND p.archive_le IS NULL AND l.d < date(?, '-${SEMAINES_SANS_SEANCE * 7} day')
@@ -904,6 +983,259 @@ route('DELETE', '/api/ressources/:id', ({ m }) => {
   return { ok: true };
 });
 
+
+// ---------- Professionnels et réunions ----------
+const FORMATS_REUNION = ['téléphone', 'e-mail', 'visio', 'présentiel', 'autre'];
+const STATUTS_REUNION = ['planifiée', 'réalisée', 'annulée'];
+const PRO_F = ['nom', 'prenom', 'structure', 'telephone', 'email', 'adresse', 'site_web', 'notes'];
+const REUNION_F = ['date', 'heure', 'duree', 'format', 'statut', 'objet', 'contenu'];
+const proNom = p => `${p.prenom || ''} ${p.nom || ''}`.trim();
+const nomsCat = id => all('SELECT c.id, c.nom FROM categories_pro c JOIN pro_categories x ON x.categorie_id=c.id WHERE x.pro_id=? ORDER BY c.nom COLLATE NOCASE', id);
+function proOut(p) {
+  const cats = nomsCat(p.id);
+  return { ...p, nom_complet: proNom(p), categories: cats.map(c => c.nom), categorie_ids: cats.map(c => c.id) };
+}
+// Catégories : on reçoit des noms (créés à la volée s'ils n'existent pas encore)
+function poserCategories(proId, noms) {
+  run('DELETE FROM pro_categories WHERE pro_id=?', proId);
+  const vus = new Set();
+  for (let nom of Array.isArray(noms) ? noms : []) {
+    nom = String(nom || '').trim().slice(0, 60); if (!nom || vus.has(norm(nom))) continue; vus.add(norm(nom));
+    let c = get('SELECT id FROM categories_pro WHERE nom=?', nom);
+    if (!c) c = { id: Number(run('INSERT INTO categories_pro (nom) VALUES (?)', nom).lastInsertRowid) };
+    run('INSERT OR IGNORE INTO pro_categories (pro_id, categorie_id) VALUES (?,?)', proId, c.id);
+  }
+}
+function proIn(b, cur = {}) {
+  const o = {};
+  for (const k of PRO_F) o[k] = String(b[k] !== undefined ? b[k] : (cur[k] ?? '')).trim();
+  if (!o.nom && !o.prenom) throw httpErr(400, 'Un nom ou un prénom est requis');
+  if (o.site_web && !/^https?:\/\//i.test(o.site_web)) o.site_web = 'https://' + o.site_web;
+  if (o.site_web && !/^https?:\/\/[^\s]+$/i.test(o.site_web)) throw httpErr(400, 'Adresse de site web invalide');
+  return o;
+}
+const statsPro = `(SELECT COUNT(*) FROM reunion_pros x JOIN reunions r ON r.id=x.reunion_id WHERE x.pro_id=p.id AND r.statut='réalisée') AS nb_reunions,
+   (SELECT MAX(r.date) FROM reunion_pros x JOIN reunions r ON r.id=x.reunion_id WHERE x.pro_id=p.id AND r.statut='réalisée') AS derniere,
+   (SELECT MIN(r.date) FROM reunion_pros x JOIN reunions r ON r.id=x.reunion_id WHERE x.pro_id=p.id AND r.statut='planifiée' AND r.date>=date('now','localtime')) AS prochaine`;
+route('GET', '/api/professionnels', () =>
+  all(`SELECT p.*, ${statsPro} FROM professionnels p ORDER BY (p.archive_le IS NOT NULL), p.nom COLLATE NOCASE, p.prenom COLLATE NOCASE`).map(proOut));
+route('GET', '/api/professionnels/:id', ({ m }) => {
+  const p = get(`SELECT p.*, ${statsPro} FROM professionnels p WHERE p.id=?`, m[1]);
+  if (!p) throw httpErr(404, 'Professionnel introuvable');
+  return { ...proOut(p), reunions: reunionsListe('EXISTS (SELECT 1 FROM reunion_pros x WHERE x.reunion_id=r.id AND x.pro_id=?)', [m[1]]) };
+});
+// Même nom (sans accents ni majuscules, prénom/nom dans n'importe quel ordre) : on prévient, sans bloquer
+function doublonsPro(o, ignorerId = 0) {
+  const cle = (a, b) => jetons(a, b).join(' ');
+  const k = cle(o.prenom, o.nom);
+  return k ? all('SELECT id, nom, prenom FROM professionnels WHERE id<>?', ignorerId).filter(p => cle(p.prenom, p.nom) === k).map(p => ({ id: p.id, nom: proNom(p) })) : [];
+}
+route('POST', '/api/professionnels', ({ body }) => {
+  const o = proIn(body);
+  const d = doublonsPro(o);
+  if (d.length && !body.confirme_doublon) throw Object.assign(httpErr(409, 'Un professionnel porte déjà ce nom'), { extra: { doublons: d } });
+  db.exec('BEGIN');
+  try {
+    const id = Number(run(`INSERT INTO professionnels (${PRO_F.join(',')}) VALUES (${PRO_F.map(() => '?').join(',')})`, ...pick(o, PRO_F)).lastInsertRowid);
+    poserCategories(id, body.categories);
+    db.exec('COMMIT');
+    return proOut(get('SELECT * FROM professionnels WHERE id=?', id));
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+});
+route('PUT', '/api/professionnels/:id', ({ m, body }) => {
+  const cur = get('SELECT * FROM professionnels WHERE id=?', m[1]);
+  if (!cur) throw httpErr(404, 'Professionnel introuvable');
+  const o = proIn(body, cur);
+  if (o.nom !== cur.nom || o.prenom !== cur.prenom) {
+    const d = doublonsPro(o, cur.id);
+    if (d.length && !body.confirme_doublon) throw Object.assign(httpErr(409, 'Un professionnel porte déjà ce nom'), { extra: { doublons: d } });
+  }
+  db.exec('BEGIN');
+  try {
+    run(`UPDATE professionnels SET ${PRO_F.map(k => k + '=?').join(',')} WHERE id=?`, ...pick(o, PRO_F), cur.id);
+    if (body.categories !== undefined) poserCategories(cur.id, body.categories);
+    db.exec('COMMIT');
+    return proOut(get('SELECT * FROM professionnels WHERE id=?', cur.id));
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+});
+route('POST', '/api/professionnels/:id/archiver', ({ m }) => {
+  const p = get('SELECT * FROM professionnels WHERE id=?', m[1]);
+  if (!p) throw httpErr(404, 'Professionnel introuvable');
+  run(`UPDATE professionnels SET archive_le = date('now','localtime') WHERE id=?`, m[1]);
+  return proOut(get('SELECT * FROM professionnels WHERE id=?', m[1]));
+});
+route('POST', '/api/professionnels/:id/desarchiver', ({ m }) => {
+  if (!get('SELECT 1 FROM professionnels WHERE id=?', m[1])) throw httpErr(404, 'Professionnel introuvable');
+  run('UPDATE professionnels SET archive_le = NULL WHERE id=?', m[1]);
+  return proOut(get('SELECT * FROM professionnels WHERE id=?', m[1]));
+});
+// Suppression : le professionnel et ses réunions où il est seul participant partent à la corbeille ; les autres réunions perdent seulement son nom
+function apercuSuppressionPro(id) {
+  const p = get('SELECT * FROM professionnels WHERE id=?', id);
+  if (!p) throw httpErr(404, 'Professionnel introuvable');
+  const seules = all(`SELECT r.id FROM reunions r JOIN reunion_pros x ON x.reunion_id=r.id WHERE x.pro_id=? AND (SELECT COUNT(*) FROM reunion_pros y WHERE y.reunion_id=r.id)=1`, id).map(r => r.id);
+  const partagees = get(`SELECT COUNT(*) n FROM reunion_pros x WHERE x.pro_id=? AND (SELECT COUNT(*) FROM reunion_pros y WHERE y.reunion_id=x.reunion_id)>1`, id).n;
+  return { id, nom: proNom(p), reunions_supprimees: seules.length, reunions_partagees: partagees, _seules: seules };
+}
+route('GET', '/api/professionnels/:id/suppression', ({ m }) => { const { _seules, ...a } = apercuSuppressionPro(Number(m[1])); return a; });
+route('DELETE', '/api/professionnels/:id', ({ m }) => {
+  const id = Number(m[1]);
+  const a = apercuSuppressionPro(id);
+  const bundle = {
+    professionnel: get('SELECT * FROM professionnels WHERE id=?', id),
+    categories: nomsCat(id).map(c => c.nom),
+    reunions: a._seules.map(rid => ({ reunion: get('SELECT * FROM reunions WHERE id=?', rid), versions: all('SELECT * FROM reunion_versions WHERE reunion_id=?', rid) })),
+    liens_reunions: all(`SELECT x.* FROM reunion_pros x WHERE x.pro_id=?`, id),
+  };
+  const detail = [a.reunions_supprimees ? plur(a.reunions_supprimees, 'réunion') : 'aucune réunion', a.reunions_partagees ? `${plur(a.reunions_partagees, 'réunion partagée')} conservée${a.reunions_partagees > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
+  versCorbeille('professionnel', a.nom, detail, bundle, () => {
+    a._seules.forEach(rid => run('DELETE FROM reunions WHERE id=?', rid));
+    run('DELETE FROM professionnels WHERE id=?', id);
+  });
+  return { ok: true };
+});
+
+// Catégories (liste modifiable)
+route('GET', '/api/categories-pro', () =>
+  all(`SELECT c.id, c.nom, (SELECT COUNT(*) FROM pro_categories x WHERE x.categorie_id=c.id) AS nb FROM categories_pro c ORDER BY c.nom COLLATE NOCASE`));
+const nomCat = b => { const n = String(b.nom || '').trim().slice(0, 60); if (!n) throw httpErr(400, 'Nom requis'); return n; };
+route('POST', '/api/categories-pro', ({ body }) => {
+  const nom = nomCat(body);
+  if (get('SELECT 1 FROM categories_pro WHERE nom=?', nom)) throw httpErr(409, 'Cette catégorie existe déjà');
+  return get('SELECT id, nom FROM categories_pro WHERE id=?', run('INSERT INTO categories_pro (nom) VALUES (?)', nom).lastInsertRowid);
+});
+route('PUT', '/api/categories-pro/:id', ({ m, body }) => {
+  if (!get('SELECT 1 FROM categories_pro WHERE id=?', m[1])) throw httpErr(404, 'Catégorie introuvable');
+  const nom = nomCat(body);
+  if (get('SELECT 1 FROM categories_pro WHERE nom=? AND id<>?', nom, m[1])) throw httpErr(409, 'Cette catégorie existe déjà');
+  run('UPDATE categories_pro SET nom=? WHERE id=?', nom, m[1]);
+  return { id: Number(m[1]), nom };
+});
+route('DELETE', '/api/categories-pro/:id', ({ m }) => {
+  if (!get('SELECT 1 FROM categories_pro WHERE id=?', m[1])) throw httpErr(404, 'Catégorie introuvable');
+  run('DELETE FROM categories_pro WHERE id=?', m[1]);               // retirée des fiches (pro_categories en cascade)
+  return { ok: true };
+});
+
+// Réunions
+function reunionsListe(where = '1=1', params = []) {
+  const rows = all(`SELECT r.* FROM reunions r WHERE ${where} ORDER BY r.date DESC, r.heure DESC, r.id DESC`, ...params);
+  return rows.map(reunionOut);
+}
+function reunionOut(r) {
+  const pros = all(`SELECT p.id, p.nom, p.prenom, p.archive_le FROM professionnels p JOIN reunion_pros x ON x.pro_id=p.id WHERE x.reunion_id=? ORDER BY p.nom COLLATE NOCASE, p.prenom COLLATE NOCASE`, r.id)
+    .map(p => ({ id: p.id, nom: proNom(p), archive: !!p.archive_le }));
+  return { ...r, pros, pros_noms: pros.map(p => p.nom).join(', ') };
+}
+function reunionIn(b, cur = {}) {
+  const o = {};
+  for (const k of REUNION_F) o[k] = b[k] !== undefined ? b[k] : (cur[k] ?? ({ heure: '', duree: 30, format: 'téléphone', statut: 'planifiée', objet: '', contenu: '' }[k]));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date || '')) throw httpErr(400, 'Date invalide (AAAA-MM-JJ)');
+  if (o.heure && !/^\d{1,2}:\d{2}$/.test(o.heure)) throw httpErr(400, 'Heure invalide');
+  o.duree = Math.round(Number(o.duree));
+  if (!(o.duree >= 1 && o.duree <= 600)) throw httpErr(400, 'Durée invalide (en minutes)');
+  if (!FORMATS_REUNION.includes(o.format)) throw httpErr(400, 'Format invalide');
+  if (!STATUTS_REUNION.includes(o.statut)) throw httpErr(400, 'Statut invalide');
+  o.objet = String(o.objet || '').trim().slice(0, 300);
+  if (typeof o.contenu !== 'string') o.contenu = '';
+  return o;
+}
+function prosIds(b, requis) {
+  if (b.pros === undefined && !requis) return null;
+  const ids = [...new Set((Array.isArray(b.pros) ? b.pros : []).map(Number).filter(Boolean))];
+  if (!ids.length) throw httpErr(400, 'Choisissez au moins un professionnel');
+  for (const id of ids) if (!get('SELECT 1 FROM professionnels WHERE id=?', id)) throw httpErr(404, 'Professionnel introuvable');
+  return ids;
+}
+// Chevauchements : avec une autre réunion ou une séance du même jour (les éléments annulés sont ignorés)
+function conflitsReunion(o, ignorerId = 0) {
+  const minutes = h => /^\d{1,2}:\d{2}$/.test(h || '') ? Number(h.split(':')[0]) * 60 + Number(h.split(':')[1]) : null;
+  const debut = minutes(o.heure); if (debut === null) return [];
+  const fin = debut + (Number(o.duree) || 30), out = [];
+  for (const r of all(`SELECT id, heure, duree, objet FROM reunions WHERE date=? AND statut<>'annulée' AND id<>?`, o.date, ignorerId)) {
+    const d = minutes(r.heure); if (d !== null && debut < d + (Number(r.duree) || 30) && d < fin) out.push({ type: 'reunion', id: r.id, heure: r.heure, libelle: r.objet || 'Réunion' });
+  }
+  for (const c of all(`SELECT c.id, c.heure, c.duree, ${NOMC('p')} AS patient_nom FROM consultations c JOIN patients p ON p.id=c.patient_id WHERE c.date=? AND c.statut<>'annulée'`, o.date)) {
+    const d = minutes(c.heure); if (d !== null && debut < d + (Number(c.duree) || 50) && d < fin) out.push({ type: 'seance', id: c.id, heure: c.heure, libelle: `Séance · ${c.patient_nom}` });
+  }
+  return out;
+}
+route('GET', '/api/reunions', () => reunionsListe());
+route('GET', '/api/reunions/:id', ({ m }) => {
+  const r = get('SELECT * FROM reunions WHERE id=?', m[1]);
+  if (!r) throw httpErr(404, 'Réunion introuvable');
+  return reunionOut(r);
+});
+route('POST', '/api/reunions', ({ body }) => {
+  const o = reunionIn(body), ids = prosIds(body, true);
+  if (o.statut !== 'annulée') { const c = conflitsReunion(o); if (c.length && !body.confirme_doublon) throw Object.assign(httpErr(409, 'Conflit d’horaire'), { extra: { conflits: c } }); }
+  db.exec('BEGIN');
+  try {
+    const id = Number(run(`INSERT INTO reunions (${REUNION_F.join(',')}) VALUES (${REUNION_F.map(() => '?').join(',')})`, ...pick(o, REUNION_F)).lastInsertRowid);
+    ids.forEach(p => run('INSERT INTO reunion_pros (reunion_id, pro_id) VALUES (?,?)', id, p));
+    db.exec('COMMIT');
+    return reunionOut(get('SELECT * FROM reunions WHERE id=?', id));
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+});
+route('PUT', '/api/reunions/:id', ({ m, body }) => {
+  const cur = get('SELECT * FROM reunions WHERE id=?', m[1]);
+  if (!cur) throw httpErr(404, 'Réunion introuvable');
+  const o = reunionIn(body, cur), ids = prosIds(body, false);
+  if (body.verifier_conflit && o.statut !== 'annulée' && (cur.date !== o.date || cur.heure !== o.heure || cur.duree !== o.duree)) {
+    const c = conflitsReunion(o, cur.id);
+    if (c.length && !body.confirme_doublon) throw Object.assign(httpErr(409, 'Conflit d’horaire'), { extra: { conflits: c } });
+  }
+  db.exec('BEGIN');
+  try {
+    if (o.contenu !== cur.contenu) garderVersionReunion(cur, o.contenu);
+    run(`UPDATE reunions SET ${REUNION_F.map(k => k + '=?').join(',')} WHERE id=?`, ...pick(o, REUNION_F), cur.id);
+    if (ids) { run('DELETE FROM reunion_pros WHERE reunion_id=?', cur.id); ids.forEach(p => run('INSERT INTO reunion_pros (reunion_id, pro_id) VALUES (?,?)', cur.id, p)); }
+    db.exec('COMMIT');
+    return reunionOut(get('SELECT * FROM reunions WHERE id=?', cur.id));
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+});
+route('DELETE', '/api/reunions/:id', ({ m }) => {
+  const r = get('SELECT * FROM reunions WHERE id=?', m[1]);
+  if (!r) throw httpErr(404, 'Réunion introuvable');
+  const out = reunionOut(r);
+  const bundle = { reunion: r, pros: out.pros.map(p => p.id), versions: all('SELECT * FROM reunion_versions WHERE reunion_id=?', r.id) };
+  versCorbeille('reunion', `Réunion du ${frDate(r.date)} · ${out.pros_noms}`, [r.format, r.objet].filter(Boolean).join(' · '), bundle, () => run('DELETE FROM reunions WHERE id=?', r.id));
+  return { ok: true };
+});
+
+// Historique des notes de réunion (mêmes règles que les notes de séance)
+function garderVersionReunion(cur, nouveau, origine = 'modification', forcer = false) {
+  const ancienTxt = texteDe(cur.contenu);
+  if (!ancienTxt) return;
+  const der = get('SELECT contenu, enregistre_le FROM reunion_versions WHERE reunion_id=? ORDER BY id DESC LIMIT 1', cur.id);
+  if (der && der.contenu === cur.contenu) return;
+  const trop = der && (Date.now() - Date.parse(der.enregistre_le.replace(' ', 'T') + 'Z')) < VERSION_DELAI_MIN * 60000;
+  const grosseSuppression = ancienTxt.length >= 200 && texteDe(nouveau).length < ancienTxt.length / 2;
+  if (forcer || !trop || grosseSuppression) run('INSERT INTO reunion_versions (reunion_id, contenu, origine) VALUES (?,?,?)', cur.id, cur.contenu, origine);
+}
+route('GET', '/api/reunions/:id/versions', ({ m }) => {
+  if (!get('SELECT 1 FROM reunions WHERE id=?', m[1])) throw httpErr(404, 'Réunion introuvable');
+  return all('SELECT id, enregistre_le, origine, contenu FROM reunion_versions WHERE reunion_id=? ORDER BY id DESC', m[1])
+    .map(v => { const t = texteDe(v.contenu); return { id: v.id, enregistre_le: iso(v.enregistre_le), origine: v.origine, taille: t.length, apercu: t.slice(0, 120) }; });
+});
+route('GET', '/api/reunions/:id/versions/:id', ({ m }) => {
+  const v = get('SELECT * FROM reunion_versions WHERE id=? AND reunion_id=?', m[2], m[1]);
+  if (!v) throw httpErr(404, 'Version introuvable');
+  return { ...v, enregistre_le: iso(v.enregistre_le) };
+});
+route('POST', '/api/reunions/:id/versions/:id/restaurer', ({ m }) => {
+  const cur = get('SELECT * FROM reunions WHERE id=?', m[1]);
+  const v = get('SELECT * FROM reunion_versions WHERE id=? AND reunion_id=?', m[2], m[1]);
+  if (!cur || !v) throw httpErr(404, 'Version introuvable');
+  db.exec('BEGIN');
+  try {
+    garderVersionReunion(cur, v.contenu, 'avant-restauration', true);
+    run('UPDATE reunions SET contenu=? WHERE id=?', v.contenu, cur.id);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return reunionOut(get('SELECT * FROM reunions WHERE id=?', cur.id));
+});
+
 // ---------- Recherche globale ----------
 const norm = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();   // sans accents ni majuscules
 const texteDe = html => String(html || '').replace(/<\/(p|h\d|li|div)>|<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ')
@@ -917,7 +1249,7 @@ function extrait(texte, mots) {
 }
 const rechercher = q => {
   const mots = norm(q).split(/\s+/).filter(Boolean);
-  const res = { patients: [], consultations: [], ressources: [], modeles: [] };
+  const res = { patients: [], consultations: [], ressources: [], modeles: [], professionnels: [], reunions: [] };
   if (!mots.length || mots.join('').length < 2) return res;
   const tout = (...champs) => { const n = norm(champs.join(' ')); return mots.every(w => n.includes(w)); };
   const MAX = 8;
@@ -931,6 +1263,18 @@ const rechercher = q => {
     const txt = texteDe(c.contenu);
     if (!tout(c.patient, c.date, frDate(c.date), txt)) continue;
     res.consultations.push({ id: c.id, titre: `Séance du ${frDate(c.date)} · ${c.patient}`, sous: extrait(txt, mots) });
+  }
+  for (const p of all('SELECT * FROM professionnels ORDER BY (archive_le IS NOT NULL), nom COLLATE NOCASE, prenom COLLATE NOCASE')) {
+    if (res.professionnels.length >= MAX) break;
+    const cats = nomsCat(p.id).map(c => c.nom);
+    if (!tout(p.prenom, p.nom, p.structure, p.email, p.telephone.replace(/[\s.-]/g, ''), p.telephone, p.adresse, p.notes, cats.join(' '))) continue;
+    res.professionnels.push({ id: p.id, titre: proNom(p), sous: [p.archive_le ? 'archivé' : '', cats.join(', '), p.structure, p.telephone].filter(Boolean).join(' · ') });
+  }
+  for (const r of all('SELECT * FROM reunions ORDER BY date DESC, heure DESC')) {
+    if (res.reunions.length >= MAX) break;
+    const o = reunionOut(r), txt = texteDe(r.contenu);
+    if (!tout(o.pros_noms, r.date, frDate(r.date), r.objet, txt)) continue;
+    res.reunions.push({ id: r.id, titre: `Réunion du ${frDate(r.date)} · ${o.pros_noms}`, sous: r.objet || extrait(txt, mots) });
   }
   for (const d of all(`SELECT r.id, r.patient_id, r.consultation_id, r.titre, r.url, ${NOMC('p')} AS patient FROM ressources r JOIN patients p ON p.id = r.patient_id ORDER BY r.ajoute_le DESC`)) {
     if (res.ressources.length >= MAX) break;
@@ -1048,6 +1392,13 @@ route('GET', '/api/export/patients.csv', ({ url }) => {
   });
   return fichier(X.csv([...enTetes(COL_PATIENT, o), 'Séances réalisées', 'Dernière séance', ...(fin ? ['Reste à régler (€)'] : [])], lignes), 'text/csv; charset=utf-8', `Patients-${aujourdhui()}.csv`);
 });
+const csvProfessionnels = () => X.csv(['N°', 'Nom', 'Prénom', 'Catégories', 'Structure', 'Téléphone', 'E-mail', 'Adresse', 'Site web', 'Notes', 'Archivé le', 'Réunions réalisées', 'Dernière réunion'],
+  all(`SELECT p.*, ${statsPro} FROM professionnels p ORDER BY (p.archive_le IS NOT NULL), p.nom COLLATE NOCASE, p.prenom COLLATE NOCASE`)
+    .map(p => [p.id, p.nom, p.prenom, nomsCat(p.id).map(c => c.nom).join(', '), p.structure, p.telephone, p.email, p.adresse, p.site_web, p.notes, p.archive_le || '', p.nb_reunions, p.derniere || '']));
+const csvReunions = () => X.csv(['N°', 'Date', 'Heure', 'Durée (min)', 'Format', 'Statut', 'Professionnels', 'Objet', 'Notes'],
+  all('SELECT * FROM reunions ORDER BY date, heure, id').map(r => [r.id, r.date, r.heure, r.duree, r.format, r.statut, reunionOut(r).pros_noms, r.objet, X.texteBrut(r.contenu)]));
+route('GET', '/api/export/professionnels.csv', () => fichier(csvProfessionnels(), 'text/csv; charset=utf-8', `Professionnels-${aujourdhui()}.csv`));
+route('GET', '/api/export/reunions.csv', () => fichier(csvReunions(), 'text/csv; charset=utf-8', `Reunions-${aujourdhui()}.csv`));
 route('GET', '/api/export/consultations.csv', ({ url }) => {
   const o = optionsExport(url), g = gardees([[null, o.anonyme ? 'Patient n°' : 'Patient'], ...COL_SEANCE], o);
   const lignes = filtreSeances(all(`SELECT c.*, ${NOMC('p')} AS patient_nom, p.date_naissance AS patient_dn, p.complement AS patient_complement FROM consultations c JOIN patients p ON p.id=c.patient_id ORDER BY c.date, c.heure`).map(c => ({ ...consultOut(c), patient_nom: c.patient_nom })), o)
@@ -1104,6 +1455,20 @@ function restaurer(item) {
       throw httpErr(409, 'La séance de ce lien n’existe plus (ou est dans la corbeille) : restaurez d’abord la séance.');
     restaurerRessources();
     cible = d.ressource.consultation_id ? '#/consultation/' + d.ressource.consultation_id : '#/patient/' + d.ressource.patient_id;
+  } else if (item.type === 'professionnel') {
+    if (get('SELECT 1 FROM professionnels WHERE id=?', d.professionnel.id)) throw httpErr(409, 'Ce professionnel existe déjà');
+    inserer('professionnels', d.professionnel);
+    poserCategories(d.professionnel.id, d.categories || []);
+    for (const x of d.reunions || []) { inserer('reunions', x.reunion); (x.versions || []).forEach(v => inserer('reunion_versions', v, true)); }
+    (d.liens_reunions || []).forEach(l => { if (get('SELECT 1 FROM reunions WHERE id=?', l.reunion_id)) inserer('reunion_pros', l, true); });
+    cible = '#/professionnel/' + d.professionnel.id;
+  } else if (item.type === 'reunion') {
+    const pros = (d.pros || []).filter(id => get('SELECT 1 FROM professionnels WHERE id=?', id));
+    if (!pros.length) throw httpErr(409, 'Le professionnel de cette réunion n’existe plus (ou est dans la corbeille) : restaurez d’abord le professionnel.');
+    inserer('reunions', d.reunion);
+    (d.versions || []).forEach(v => inserer('reunion_versions', v, true));
+    pros.forEach(id => inserer('reunion_pros', { reunion_id: d.reunion.id, pro_id: id }, true));
+    cible = '#/reunion/' + d.reunion.id;
   } else {
     inserer('modeles', d.modele);
     cible = '#/modeles/' + d.modele.id;
@@ -1323,6 +1688,12 @@ const DOC_TABLES = {
   liens: 'Liens familiaux : patient_id = l’enfant / l’ado, proche_id = le parent / responsable, role = nature du lien.',
   ressources: 'Liens web joints à un patient (consultation_id vide) ou à une séance.',
   modeles: 'Modèles de page de séance (contenu en HTML).',
+  professionnels: 'Annuaire des professionnels avec qui la psychologue échange (orientation, coordination). Catégories dans pro_categories.',
+  categories_pro: 'Liste des catégories de professionnels (modifiable).',
+  pro_categories: 'Liens professionnel ↔ catégorie (un professionnel peut avoir plusieurs catégories).',
+  reunions: 'Une ligne par réunion ou échange avec un ou plusieurs professionnels (format : téléphone, e-mail, visio, présentiel, autre). Notes en HTML dans « contenu ».',
+  reunion_pros: 'Participants d’une réunion : une ligne par professionnel présent.',
+  reunion_versions: 'Historique des notes de réunion : anciennes versions du texte (HTML), de la plus ancienne à la plus récente (id croissant). Heure en UTC.',
   patient_cr_versions: 'Historique du compte-rendu des patients : anciennes versions du texte (HTML), de la plus ancienne à la plus récente (id croissant). Heures en UTC.',
   consultation_versions: 'Historique des notes de séance : anciennes versions du texte (HTML), de la plus ancienne à la plus récente (id croissant). Heure en UTC.',
   corbeille: 'Éléments supprimés, conservés 30 jours (donnees = copie JSON de l’élément).',
@@ -1369,6 +1740,8 @@ route('GET', '/api/export/complet', () => {
     '  seances.csv                   Toutes les séances avec leurs notes (à ouvrir avec Excel).',
     '  historique-notes.csv          Anciennes versions des notes de séance (texte brut), au cas où une correction serait à reprendre.',
     '  historique-comptes-rendus.csv Anciennes versions des comptes-rendus des patients (texte brut).',
+    '  professionnels.csv            Annuaire des professionnels (coordonnées, catégories).',
+    '  reunions.csv                  Réunions avec les professionnels (date, format, participants, notes).',
     '  donnees-completes.json        Copie intégrale et structurée (patients, liens, séances en HTML, historique des notes, ressources, modèles) pour un autre logiciel.',
     '  dossiers/                     Un fichier Word (.docx) et un fichier texte Markdown (.md) par patient : coordonnées, liens, séances et notes.',
     '  SCHEMA-BASE-DE-DONNEES.txt    Description de la base cabinet.db, pour la réutiliser ailleurs.', '',
@@ -1385,11 +1758,16 @@ route('GET', '/api/export/complet', () => {
   add('historique-comptes-rendus.csv', X.csv(['Patient', 'Texte rédigé le (UTC)', 'Version mise de côté le (UTC)', 'Origine', 'Texte'],
     all(`SELECT v.*, ${NOMC('p')} AS patient_nom FROM patient_cr_versions v JOIN patients p ON p.id=v.patient_id ORDER BY p.nom, p.prenom, v.id`)
       .map(v => [v.patient_nom, v.maj_le || '', v.enregistre_le, v.origine, X.texteBrut(v.contenu)])));
+  add('professionnels.csv', csvProfessionnels());
+  add('reunions.csv', csvReunions());
   add('donnees-completes.json', JSON.stringify({ exporte_le: dateJ, application: nomCabinet(), version: require('./package.json').version,
     patients: all('SELECT * FROM patients ORDER BY id'), liens: all('SELECT * FROM liens ORDER BY id'),
     consultations: all('SELECT * FROM consultations ORDER BY id').map(c => ({ ...c, presents: JSON.parse(c.presents || '[]') })),
     historique_notes: all('SELECT * FROM consultation_versions ORDER BY id'),
     historique_comptes_rendus: all('SELECT * FROM patient_cr_versions ORDER BY id'),
+    professionnels: all('SELECT * FROM professionnels ORDER BY id'), categories_pro: all('SELECT * FROM categories_pro ORDER BY id'),
+    pro_categories: all('SELECT * FROM pro_categories'), reunions: all('SELECT * FROM reunions ORDER BY id'),
+    reunion_pros: all('SELECT * FROM reunion_pros'), historique_reunions: all('SELECT * FROM reunion_versions ORDER BY id'),
     ressources: all('SELECT * FROM ressources ORDER BY id'), modeles: all('SELECT * FROM modeles ORDER BY id') }, null, 1));
   const pris = new Set();
   for (const p of patients) {

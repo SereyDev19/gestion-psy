@@ -390,3 +390,29 @@ a.tile:hover { border-color: var(--line2); }
 .crst { min-width: 90px; text-align: right; }
 #crcard .editor { min-height: 140px; }
 #crcard .editor > p:only-child:empty::before, #crcard .editor > p:only-child:has(> br:only-child)::before { content: "Écrivez ici le compte-rendu du patient, à compléter au fil du suivi…"; color: var(--muted2); pointer-events: none; }
+
+/* Professionnels et réunions */
+.subtabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -6px 0 18px; }
+.subtabs a { padding: 8px 16px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; }
+.subtabs a:hover { color: var(--ink); }
+.subtabs a.on { color: var(--accent-ink2); border-bottom-color: var(--accent); font-weight: 600; }
+.pros .row { grid-template-columns: minmax(160px, 1.1fr) minmax(0, 1.3fr) minmax(130px, .9fr) 150px; }
+.reunions .row { grid-template-columns: 112px minmax(130px, 1fr) minmax(0, 1.2fr) 130px; }
+.kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); align-items: baseline; overflow-wrap: anywhere; }
+.kv:first-of-type { border-top: 0; }
+.mp { position: relative; }
+.mp-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.mp-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--accent-soft); color: var(--accent-ink2); border-radius: 999px; padding: 3px 4px 3px 12px; font-size: 13.5px; font-weight: 500; }
+.mp-x { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 17px; line-height: 1; padding: 0 6px; border-radius: 999px; }
+.mp-x:hover { background: rgba(0,0,0,.1); }
+.mp-box { position: relative; }
+.mp-dd { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.14); max-height: 240px; overflow: auto; padding: 4px; }
+.mp-opt, .mp-vide { padding: 8px 10px; border-radius: 7px; cursor: pointer; }
+.mp-opt.on { background: var(--accent-soft); color: var(--accent-ink2); }
+.mp-vide { cursor: default; }
+.catlist { border: 1px solid var(--line); border-radius: 10px; max-height: 340px; overflow: auto; }
+.catrow { display: grid; grid-template-columns: minmax(0, 1fr) 90px auto; gap: 10px; align-items: center; padding: 7px 12px; border-top: 1px solid var(--line); }
+.catrow:first-child { border-top: 0; }
+.catbtn { display: flex; gap: 6px; }
+@media (max-width: 760px) { .pros .row, .reunions .row { grid-template-columns: 1fr; gap: 4px; } .catrow { grid-template-columns: 1fr auto; } .catrow > .muted { display: none; } }
+.mp-chips[hidden], .mp-dd[hidden] { display: none; }

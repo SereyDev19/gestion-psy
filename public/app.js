@@ -223,6 +223,10 @@ const routes = [
   [/^#\/patient\/(\d+)$/, viewPatient],
   [/^#\/consultations$/, viewConsultations],
   [/^#\/consultation\/(\d+)$/, viewConsultation],
+  [/^#\/professionnels$/, viewProfessionnels],
+  [/^#\/professionnel\/(\d+)$/, viewProfessionnel],
+  [/^#\/reunions$/, viewReunions],
+  [/^#\/reunion\/(\d+)$/, viewReunion],
   [/^#\/modeles(?:\/(\d+))?$/, viewModeles],
   [/^#\/doublons$/, viewDoublons],
   [/^#\/parametres$/, viewParametres],
@@ -234,7 +238,8 @@ async function render() {
   for (const [re, fn] of routes) {
     const m = h.match(re);
     if (m) {
-      const nav = h.split('/')[1].replace(/s$/, '');
+      let nav = h.split('/')[1].replace(/s$/, '');
+      if (nav === 'reunion') nav = 'professionnel';                     // les réunions sont dans l'onglet Professionnels
       document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav.replace(/s$/, '') === (nav === 'patient' ? 'patient' : nav)));
       refreshTrash(); refreshJour();
       exportHook = null;
@@ -746,7 +751,7 @@ async function viewPatient(m) {
   };
   wireEditor(() => { crPending = $('#editor').innerHTML; crSt('Modifications…'); clearTimeout(crTimer); crTimer = setTimeout(crSave, 700); });
   exportHook = async () => { clearTimeout(crTimer); await crSave(); };
-  $('#crhist').onclick = async () => { clearTimeout(crTimer); await crSave(); historiqueNotes(id, () => render(), true); };
+  $('#crhist').onclick = async () => { clearTimeout(crTimer); await crSave(); historiqueNotes(id, () => render(), 'cr'); };
   window.addEventListener('hashchange', () => { clearTimeout(crTimer); crSave(); }, { once: true });
   window.addEventListener('beforeunload', () => { if (crPending !== null) fetch(`/api/patients/${id}/compte-rendu`, { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contenu: crPending }) }); }, { once: true });
   mountRessources($('#res-p'), 'patients', id, p.ressources);
@@ -808,7 +813,7 @@ function afficherCle(cle) {
     <label class="check"><input type="checkbox" required> J’ai noté cette clé en lieu sûr</label>`, async () => {}, 'C’est noté');
 }
 async function viewParametres() {
-  const [P, MAJ, SV] = await Promise.all([api('GET', '/api/parametres'), api('GET', '/api/mise-a-jour'), api('GET', '/api/sauvegardes')]);
+  const [P, MAJ, SV, CATS] = await Promise.all([api('GET', '/api/parametres'), api('GET', '/api/mise-a-jour'), api('GET', '/api/sauvegardes'), api('GET', '/api/categories-pro')]);
   auth.protege = P.protege; auth.delai = P.delai_min; majBoutonVerrou();
   const mdpChamps = (actuel, nouveau) => `${actuel ? '<div class="field"><label>Mot de passe actuel</label><input type="password" name="actuel" autocomplete="current-password" required></div>' : ''}
     ${nouveau ? `<div class="field"><label>Nouveau mot de passe <span class="muted tiny">(8 caractères minimum)</span></label><input type="password" name="mdp" minlength="8" autocomplete="new-password" required></div>
@@ -818,6 +823,7 @@ async function viewParametres() {
       <p class="muted tiny" style="margin-top:0">Affiché à côté du logo et dans le titre de la fenêtre.</p>
       <form id="nomform" class="inl"><input id="nomcab" maxlength="40" value="${esc(P.nom_cabinet)}" aria-label="Nom de l’application"><button class="btn primary">Enregistrer</button>
         ${P.nom_cabinet !== P.nom_defaut ? '<button type="button" class="btn" id="nomdef">Valeur d’origine</button>' : ''}</form></div>
+    ${categoriesCardHtml(CATS)}
     <div class="card pcard"><h2>Mot de passe</h2>
       ${P.protege ? `<p style="margin-top:0">🔒 L’accès à l’application est protégé par un mot de passe.</p>
         <div class="field"><label>Verrouillage automatique</label><select id="delai">${[[0, 'Jamais'], [5, 'Après 5 minutes d’inactivité'], [10, 'Après 10 minutes'], [15, 'Après 15 minutes'], [30, 'Après 30 minutes'], [60, 'Après 1 heure']]
@@ -888,6 +894,7 @@ async function viewParametres() {
     } catch (e) { $('#dirmsg').textContent = (e && e.message) || 'Changement impossible.'; }
     b.disabled = false;
   };
+  brancherCategories(CATS);
   $('#aff-taille').onchange = e => GP.regler('taille', e.target.value);
   $('#aff-theme').onchange = e => GP.regler('theme', e.target.value);
   if ($('#svpurge')) $('#svpurge').onclick = () => modal('Supprimer les anciennes sauvegardes ?', `<p style="margin-top:0">Seules les <b>7 sauvegardes les plus récentes</b> seront conservées. Les autres seront supprimées définitivement.</p>`,
@@ -1022,7 +1029,18 @@ const evTitle = c => `${c.heure || ''} ${c.patient_nom}${HOMO.has(c.patient_id) 
 const glissable = c => c.statut === 'planifiée' ? 'draggable="true"' : '';
 const dueDot = c => c.statut === 'réalisée' && !c.paye ? '<i class="due" title="À régler"></i>' : '';
 
-function drawCalendar(all) {
+// Calendrier commun aux séances et aux réunions : cfg décrit ce qui change (libellés, couleurs, ouverture, création, enregistrement du déplacement)
+const CAL_SEANCES = {
+  etat: agenda, unite: 'séance', defDuree: 50, api: '/api/consultations', deplace: 'Séance déplacée',
+  libelle: c => c.patient_nom, titre: evTitle, classe: evClass, glissable, point: dueDot,
+  legende: '<span><i class="lg plan"></i>Planifiée</span><span><i class="lg ok"></i>Réalisée</span><span><i class="lg abs"></i>Absence</span><span><i class="lg off"></i>Annulée</span>',
+  ouvrir: id => location.hash = '#/consultation/' + id,
+  creer: opts => newConsultationModal(null, opts),
+  conflits: (c, date, heure, liste) => `<p style="margin-top:0"><b>${esc(c.patient_nom)}</b> → ${esc(fmtDate(date))}${heure ? ' à ' + esc(heure) : ''}</p>${liste.map(x => `<div class="dbl-c"><div><b>${esc(x.patient_nom)}</b> <span class="muted tiny">${esc(x.heure || 'sans heure')}</span>
+    <div class="dbl-r tiny">${x.type === 'meme' ? 'Ce patient a déjà une séance ce jour-là (doublon ?)' : 'Chevauche l’horaire d’un autre patient'}</div></div></div>`).join('')}`,
+};
+function drawCalendar(all, cfg = CAL_SEANCES) {
+  const agenda = cfg.etat;
   const t = today();
   const byDay = {};
   all.forEach(c => (byDay[c.date] = byDay[c.date] || []).push(c));
@@ -1036,33 +1054,32 @@ function drawCalendar(all) {
   const inPeriod = agenda.mode === 'semaine'
     ? all.filter(c => c.date >= lun && c.date <= addDays(lun, 6))
     : all.filter(c => c.date.startsWith(mois));
-  $('#count').textContent = `${inPeriod.length} séance${inPeriod.length > 1 ? 's' : ''} sur la période`;
+  $('#count').textContent = `${inPeriod.length} ${cfg.unite}${inPeriod.length > 1 ? 's' : ''} sur la période`;
 
   $('#body').innerHTML = `<div class="toolbar calbar">
       <div class="seg" id="seg-mode"><button data-m="semaine">Semaine</button><button data-m="mois">Mois</button></div>
       <div class="nav"><button class="btn small" id="prev" aria-label="Précédent">‹</button><button class="btn small" id="todaybtn">Aujourd’hui</button><button class="btn small" id="next" aria-label="Suivant">›</button></div>
       <div class="caltitle">${esc(titre)}</div>
-      <div class="legend"><span><i class="lg plan"></i>Planifiée</span><span><i class="lg ok"></i>Réalisée</span><span><i class="lg abs"></i>Absence</span><span><i class="lg off"></i>Annulée</span></div></div>
+      <div class="legend">${cfg.legende}</div></div>
     <div class="card" style="padding:0;overflow:hidden" id="cal"></div>`;
-  document.querySelectorAll('#seg-mode button').forEach(b => { b.classList.toggle('on', b.dataset.m === agenda.mode); b.onclick = () => { agenda.mode = b.dataset.m; drawCalendar(all); }; });
-  const step = n => { agenda.ref = agenda.mode === 'semaine' ? addDays(agenda.ref, 7 * n) : addMonths(agenda.ref, n); drawCalendar(all); };
+  document.querySelectorAll('#seg-mode button').forEach(b => { b.classList.toggle('on', b.dataset.m === agenda.mode); b.onclick = () => { agenda.mode = b.dataset.m; drawCalendar(all, cfg); }; });
+  const step = n => { agenda.ref = agenda.mode === 'semaine' ? addDays(agenda.ref, 7 * n) : addMonths(agenda.ref, n); drawCalendar(all, cfg); };
   $('#prev').onclick = () => step(-1); $('#next').onclick = () => step(1);
-  $('#todaybtn').onclick = () => { agenda.ref = today(); drawCalendar(all); };
+  $('#todaybtn').onclick = () => { agenda.ref = today(); drawCalendar(all, cfg); };
 
-  const open = id => location.hash = '#/consultation/' + id;
+  const open = cfg.ouvrir;
   // Glisser-déposer : on déplace une séance planifiée (semaine : jour + heure au quart d'heure ; mois : jour, l'heure est conservée)
   let drag = null;
   const deplacer = async (id, date, heure) => {
     const c = all.find(x => x.id === id);
     if (!c || (c.date === date && (heure === undefined || c.heure === heure))) return;
     const corps = { date, ...(heure !== undefined ? { heure } : {}), verifier_conflit: true };
-    const fait = () => { toast('Séance déplacée'); render(); };
-    try { await api('PUT', '/api/consultations/' + id, corps); fait(); }
+    const fait = () => { toast(cfg.deplace); render(); };
+    try { await api('PUT', cfg.api + '/' + id, corps); fait(); }
     catch (e) {
       if (!(e.data && e.data.conflits)) return;
-      modal('Horaire déjà occupé', `<p style="margin-top:0"><b>${esc(c.patient_nom)}</b> → ${esc(fmtDate(date))}${heure ? ' à ' + esc(heure) : ''}</p>${e.data.conflits.map(x => `<div class="dbl-c"><div><b>${esc(x.patient_nom)}</b> <span class="muted tiny">${esc(x.heure || 'sans heure')}</span>
-        <div class="dbl-r tiny">${x.type === 'meme' ? 'Ce patient a déjà une séance ce jour-là (doublon ?)' : 'Chevauche l’horaire d’un autre patient'}</div></div></div>`).join('')}`,
-        async () => { await api('PUT', '/api/consultations/' + id, { ...corps, confirme_doublon: true }); fait(); }, 'Déplacer quand même');
+      modal('Horaire déjà occupé', cfg.conflits(c, date, heure, e.data.conflits),
+        async () => { await api('PUT', cfg.api + '/' + id, { ...corps, confirme_doublon: true }); fait(); }, 'Déplacer quand même');
     }
   };
   const brancher = (cibles, quand) => {
@@ -1086,13 +1103,13 @@ function drawCalendar(all) {
         const shown = L.slice(0, 3);
         return `<div class="mo-cell ${d.startsWith(mois) ? '' : 'other'} ${d === t ? 'today' : ''}" data-day="${d}">
           <div class="mo-num">${Number(d.slice(8))}</div>
-          ${shown.map(c => `<a class="${evClass(c)}" data-id="${c.id}" ${glissable(c)} title="${esc(evTitle(c))}">${dueDot(c)}<b>${esc(c.heure || '')}</b> ${esc(c.patient_nom)}</a>`).join('')}
+          ${shown.map(c => `<a class="${cfg.classe(c)}" data-id="${c.id}" ${cfg.glissable(c)} title="${esc(cfg.titre(c))}">${cfg.point(c)}<b>${esc(c.heure || '')}</b> ${esc(cfg.libelle(c))}</a>`).join('')}
           ${L.length > 3 ? `<a class="more" data-week="${d}">+ ${L.length - 3} autre${L.length - 3 > 1 ? 's' : ''}</a>` : ''}</div>`; }).join('')}</div>`;
     document.querySelectorAll('.mo-cell').forEach(cell => cell.onclick = e => {
       const ev = e.target.closest('[data-id]'), more = e.target.closest('[data-week]');
       if (ev) return open(ev.dataset.id);
-      if (more) { agenda.ref = more.dataset.week; agenda.mode = 'semaine'; return drawCalendar(all); }
-      newConsultationModal(null, { date: cell.dataset.day });
+      if (more) { agenda.ref = more.dataset.week; agenda.mode = 'semaine'; return drawCalendar(all, cfg); }
+      cfg.creer({ date: cell.dataset.day });
     });
     brancher('.mo-cell', (cell, e, d) => deplacer(d.id, cell.dataset.day));
     return;
@@ -1103,13 +1120,13 @@ function drawCalendar(all) {
   let h0 = 8, h1 = 20;                                    // plage par défaut, élargie si une séance sort de la plage
   days.forEach(d => (byDay[d] || []).forEach(c => {
     const m = toMin(c.heure); if (m === null) return;
-    h0 = Math.min(h0, Math.floor(m / 60)); h1 = Math.max(h1, Math.ceil((m + (c.duree || 50)) / 60));
+    h0 = Math.min(h0, Math.floor(m / 60)); h1 = Math.max(h1, Math.ceil((m + (c.duree || cfg.defDuree)) / 60));
   }));
   const H = h1 - h0;
   const sansHeure = days.map(d => (byDay[d] || []).filter(c => toMin(c.heure) === null));
   const colHtml = d => {
     // séances qui se chevauchent : affichées en cascade (décalées de 16 px), chacune garde son nom lisible
-    const L = (byDay[d] || []).filter(c => toMin(c.heure) !== null).map(c => ({ c, s: toMin(c.heure), e: toMin(c.heure) + (c.duree || 50) }));
+    const L = (byDay[d] || []).filter(c => toMin(c.heure) !== null).map(c => ({ c, s: toMin(c.heure), e: toMin(c.heure) + (c.duree || cfg.defDuree) }));
     let cluster = [], clusterEnd = -1; const out = [];
     const flush = () => { const n = Math.max(1, ...cluster.map(x => x.lane + 1)); cluster.forEach(x => out.push({ ...x, n })); cluster = []; };
     L.forEach(x => {
@@ -1119,19 +1136,19 @@ function drawCalendar(all) {
       cluster.push(x); clusterEnd = Math.max(clusterEnd, x.e);
     });
     flush();
-    return out.map(x => `<a class="${evClass(x.c)} blk" data-id="${x.c.id}" ${glissable(x.c)} title="${esc(evTitle(x.c))}"
+    return out.map(x => `<a class="${cfg.classe(x.c)} blk" data-id="${x.c.id}" ${cfg.glissable(x.c)} title="${esc(cfg.titre(x.c))}"
       style="top:${(x.s - h0 * 60) / 60 * HH}px;height:${Math.max(22, (x.e - x.s) / 60 * HH - 2)}px;left:${x.lane * 16 + 2}px;width:calc(100% - ${(x.n - 1) * 16 + 4}px);z-index:${x.lane + 1}">
-      ${dueDot(x.c)}<b>${esc(x.c.heure)}</b> ${esc(x.c.patient_nom)}</a>`).join('');
+      ${cfg.point(x.c)}<b>${esc(x.c.heure)}</b> ${esc(cfg.libelle(x.c))}</a>`).join('');
   };
   $('#cal').innerHTML = `<div class="wk-head"><div></div>${days.map((d, i) => `<div class="${d === t ? 'today' : ''}"><span>${JOURS[i]}</span> <b>${Number(d.slice(8))}</b></div>`).join('')}</div>
-    ${sansHeure.some(l => l.length) ? `<div class="wk-allday"><div class="hl">sans heure</div>${sansHeure.map(l => `<div>${l.map(c => `<a class="${evClass(c)}" data-id="${c.id}">${dueDot(c)}${esc(c.patient_nom)}</a>`).join('')}</div>`).join('')}</div>` : ''}
+    ${sansHeure.some(l => l.length) ? `<div class="wk-allday"><div class="hl">sans heure</div>${sansHeure.map(l => `<div>${l.map(c => `<a class="${cfg.classe(c)}" data-id="${c.id}">${cfg.point(c)}${esc(cfg.libelle(c))}</a>`).join('')}</div>`).join('')}</div>` : ''}
     <div class="wk-body" style="height:${H * HH}px"><div class="hours">${Array.from({ length: H }, (_, i) => `<div style="height:${HH}px"><span>${pad(h0 + i)}h</span></div>`).join('')}</div>
       ${days.map(d => `<div class="wk-col ${d === t ? 'today' : ''}" data-day="${d}" style="background-size:100% ${HH}px">${colHtml(d)}</div>`).join('')}</div>`;
   document.querySelectorAll('.wk-col').forEach(col => col.onclick = e => {
     const ev = e.target.closest('[data-id]'); if (ev) return open(ev.dataset.id);
     const y = e.clientY - col.getBoundingClientRect().top;
     const min = Math.round((h0 * 60 + y / HH * 60) / 30) * 30;            // arrondi à la demi-heure
-    newConsultationModal(null, { date: col.dataset.day, heure: `${pad(Math.floor(min / 60))}:${pad(min % 60)}` });
+    cfg.creer({ date: col.dataset.day, heure: `${pad(Math.floor(min / 60))}:${pad(min % 60)}` });
   });
   document.querySelectorAll('.wk-allday [data-id]').forEach(a => a.onclick = () => open(a.dataset.id));
   brancher('.wk-col', (col, e, d) => {
@@ -1244,13 +1261,14 @@ function diffMots(avant, apres) {
   return out;
 }
 // Paramètre « cr » : historique du compte-rendu d'un patient (sinon : notes d'une séance)
-async function historiqueNotes(id, apresRestauration, cr = false) {
+async function historiqueNotes(id, apresRestauration, type = 'seance') {
   const root = $('#modal-root');
-  const base = cr ? `/api/patients/${id}/compte-rendu/versions` : `/api/consultations/${id}/versions`;
-  const [versions, cur] = await Promise.all([api('GET', base), cr ? api('GET', '/api/patients/' + id).then(p => ({ contenu: p.compte_rendu })) : api('GET', '/api/consultations/' + id)]);
+  const cr = type === true || type === 'cr', reu = type === 'reunion';
+  const base = cr ? `/api/patients/${id}/compte-rendu/versions` : reu ? `/api/reunions/${id}/versions` : `/api/consultations/${id}/versions`;
+  const [versions, cur] = await Promise.all([api('GET', base), cr ? api('GET', '/api/patients/' + id).then(p => ({ contenu: p.compte_rendu })) : api('GET', reu ? '/api/reunions/' + id : '/api/consultations/' + id)]);
   const quand = v => new Date(cr ? (v.maj_le || v.enregistre_le) : v.enregistre_le).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const close = () => root.innerHTML = '';
-  root.innerHTML = `<div class="overlay"><div class="modal histo"><h2>${cr ? 'Historique du compte-rendu' : 'Historique des notes'}</h2>
+  root.innerHTML = `<div class="overlay"><div class="modal histo"><h2>${cr ? 'Historique du compte-rendu' : reu ? 'Historique des notes de la réunion' : 'Historique des notes'}</h2>
     <p class="muted">Les anciennes versions du texte sont conservées automatiquement (environ toutes les 10 minutes de saisie, et dès qu’une grande partie du texte disparaît). Restaurer une version ne détruit rien : le texte actuel est lui aussi mis de côté.</p>
     ${versions.length ? `<div class="hlist">${versions.map(v => `<div class="hrow" data-v="${v.id}">
         <div class="hmeta"><b>${esc(quand(v))}</b>${v.origine === 'avant-restauration' ? ' <span class="chip">avant une restauration</span>' : v.origine === 'avant-fusion' ? ' <span class="chip">avant une fusion de fiches</span>' : ''}<span class="muted"> · ${v.taille} caractères</span>
@@ -1333,6 +1351,7 @@ async function viewAccueil() {
         <div class="card hcard" style="margin-top:22px"><h2>Prochaines séances</h2>
           ${A.prochaines.length ? `<div class="hrows">${A.prochaines.map(c => ligne(c, true)).join('')}</div>`
             : '<div class="empty" style="padding:18px 0 6px"><div class="empty-t">Rien de planifié pour l’instant</div>Cliquez sur une date du calendrier pour créer une séance.</div>'}</div>
+        ${accueilReunionsHtml(A)}
       </div>
       <div>
         ${A.a_completer.n ? `<div class="card hcard" style="margin-bottom:22px"><h2>À compléter <span class="badge warn">${A.a_completer.n}</span></h2>
@@ -1349,11 +1368,12 @@ async function viewAccueil() {
   $('#t-regler').onclick = () => { agenda.vue = 'liste'; agenda.onglet = 'impayees'; agenda.periode = 'tout'; };
   document.querySelectorAll('.hr[data-id]').forEach(r => r.onclick = () => location.hash = '#/consultation/' + r.dataset.id);
   document.querySelectorAll('.hr[data-patient]').forEach(r => r.onclick = () => location.hash = '#/patient/' + r.dataset.patient);
+  document.querySelectorAll('.hr[data-reunion]').forEach(r => r.onclick = () => location.hash = '#/reunion/' + r.dataset.reunion);
 }
 
 async function viewCorbeille() {
   const items = await api('GET', '/api/corbeille');
-  const TYPE = { patient: ['Patient', 'blue'], consultation: ['Séance', 'ok'], modele: ['Modèle', ''], ressource: ['Lien', 'warn'] };
+  const TYPE = { patient: ['Patient', 'blue'], consultation: ['Séance', 'ok'], modele: ['Modèle', ''], ressource: ['Lien', 'warn'], professionnel: ['Professionnel', 'blue'], reunion: ['Réunion', 'ok'] };
   app.innerHTML = `<div class="head"><div><h1>Corbeille</h1>
       <div class="sub">Les éléments supprimés sont conservés 30 jours, puis effacés définitivement.</div></div>
       ${items.length ? '<button class="btn danger" id="empty">Vider la corbeille</button>' : ''}</div>
@@ -1387,7 +1407,7 @@ function ouvrirRecherche() {
   if (searchState.ouvert) { $('#sq').focus(); return; }
   searchState.ouvert = true;
   root.innerHTML = `<div class="overlay top"><div class="palette" role="dialog" aria-label="Recherche">
-    <input id="sq" type="search" placeholder="Rechercher un patient, une séance, un lien, un modèle…" autocomplete="off" spellcheck="false">
+    <input id="sq" type="search" placeholder="Rechercher un patient, une séance, un professionnel, un lien…" autocomplete="off" spellcheck="false">
     <div id="sres" class="sres"><div class="empty">Tapez au moins 2 lettres. Les accents et majuscules n’ont pas d’importance.</div></div>
     <div class="shint muted tiny"><span><kbd>↑</kbd><kbd>↓</kbd> naviguer</span><span><kbd>Entrée</kbd> ouvrir</span><span><kbd>Échap</kbd> fermer</span></div></div></div>`;
   const input = $('#sq'); input.focus();
@@ -1403,7 +1423,8 @@ function ouvrirRecherche() {
   };
   const draw = r => {
     const G = [['patients', 'Patients', x => '#/patient/' + x.id], ['consultations', 'Séances', x => '#/consultation/' + x.id],
-               ['ressources', 'Ressources', x => x.cible], ['modeles', 'Modèles de séance', x => '#/modeles/' + x.id]];
+               ['ressources', 'Ressources', x => x.cible], ['modeles', 'Modèles de séance', x => '#/modeles/' + x.id],
+               ['professionnels', 'Professionnels', x => '#/professionnel/' + x.id], ['reunions', 'Réunions', x => '#/reunion/' + x.id]];
     items = []; let html = '';
     for (const [k, titre, href] of G) {
       if (!r[k].length) continue;

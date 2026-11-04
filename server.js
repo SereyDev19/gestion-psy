@@ -267,7 +267,14 @@ const MIGRATIONS = [
      ('Psychothérapeute'),
      ('Sage-femme'),
      ('Sophrologue');`,
-  // v14, v15… : ajouter ici, par exemple :
+  // v14 : provenance du patient (comment il est arrivé au cabinet) ; liste de sources modifiable
+  `ALTER TABLE patients ADD COLUMN provenance TEXT NOT NULL DEFAULT '';
+   CREATE TABLE provenances (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     nom TEXT NOT NULL UNIQUE COLLATE NOCASE
+   );
+   INSERT INTO provenances (nom) VALUES ('Site web'), ('Doctolib'), ('Google'), ('Recommandation'), ('Orientation par un professionnel');`,
+  // v15, v16… : ajouter ici, par exemple :
   // `ALTER TABLE consultations ADD COLUMN lieu TEXT DEFAULT ''`,
 ];
 if (process.env.EXTRA_MIGRATION) MIGRATIONS.push(process.env.EXTRA_MIGRATION); // réservé aux tests
@@ -304,7 +311,7 @@ const get = (sql, ...p) => db.prepare(sql).get(...p);
 const run = (sql, ...p) => db.prepare(sql).run(...p);
 const pick = (obj, keys) => keys.map(k => (obj[k] === undefined ? null : obj[k]));
 
-const PATIENT_F = ['nom', 'prenom', 'civilite', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'notes', 'complement'];
+const PATIENT_F = ['nom', 'prenom', 'civilite', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'notes', 'complement', 'provenance'];
 
 // Nom affiché partout : « Prénom Nom » (calculé, jamais stocké)
 const NOMC = a => `TRIM(COALESCE(${a}.prenom,'') || ' ' || ${a}.nom)`;
@@ -345,6 +352,15 @@ function formaterTelephone(brut) {
 const formaterEmail = brut => { const e = String(brut ?? '').trim().toLowerCase(); return !e ? '' : /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(e) ? e : null; };
 // Valide et normalise les champs d'identité reçus. « ancien » : fiche actuelle ; un téléphone / e-mail inchangé n'est pas revérifié
 // (une ancienne fiche mal renseignée ne bloque pas les autres modifications).
+// Provenance : on reçoit un nom ; s'il n'est pas encore dans la liste (ajout libre), il y est ajouté ; la casse de la liste fait foi
+function provenanceCanonique(v) {
+  const nom = String(v ?? '').trim().slice(0, 80);
+  if (!nom) return '';
+  const ex = get('SELECT nom FROM provenances WHERE nom=?', nom);
+  if (ex) return ex.nom;
+  run('INSERT INTO provenances (nom) VALUES (?)', nom);
+  return nom;
+}
 function identite(b, ancien = null) {
   if (b.civilite !== undefined && b.civilite !== null && !['', 'M', 'Mme'].includes(b.civilite)) throw httpErr(400, 'Civilité invalide');
   if (b.email !== undefined && b.email !== null && !(ancien && b.email === ancien.email)) {
@@ -353,6 +369,7 @@ function identite(b, ancien = null) {
   if (b.telephone !== undefined && b.telephone !== null && !(ancien && b.telephone === ancien.telephone)) {
     const t = formaterTelephone(b.telephone); if (t === null) throw httpErr(400, MSG_TEL); b.telephone = t;
   }
+  if (b.provenance !== undefined && !(ancien && b.provenance === ancien.provenance)) b.provenance = provenanceCanonique(b.provenance);
   if (b.date_naissance === '') b.date_naissance = null;
   if (b.date_naissance) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date_naissance) || isNaN(new Date(b.date_naissance + 'T12:00:00'))) throw httpErr(400, 'Date de naissance invalide');
@@ -520,7 +537,7 @@ route('POST', '/api/patients/:id/fusion', ({ m, body }) => {
   const vide = v => v === null || v === undefined || String(v).trim() === '';
   const val = f => choix[f] === 'autre' ? B[f] : (choix[f] === 'garde' ? A[f] : (vide(A[f]) ? B[f] : A[f]));
   const fin = {};
-  ['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'email', 'telephone', 'contact', 'complement'].forEach(f => { fin[f] = val(f) ?? ''; });
+  ['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'email', 'telephone', 'contact', 'complement', 'provenance'].forEach(f => { fin[f] = val(f) ?? ''; });
   if (!fin.date_naissance) fin.date_naissance = null;
   fin.statut = choix.statut ? val('statut') : (A.statut === 'proche' && B.statut !== 'proche' ? B.statut : A.statut);
   const nomB = `${B.prenom || ''} ${B.nom}`.trim(), nomA = `${A.prenom || ''} ${A.nom}`.trim();
@@ -548,8 +565,8 @@ route('POST', '/api/patients/:id/fusion', ({ m, body }) => {
       run('UPDATE consultations SET presents=? WHERE id=?', JSON.stringify([...new Set(pr)]), c.id);
     }
     run('DELETE FROM doublons_ignores WHERE a=? OR b=?', idB, idB);
-    run(`UPDATE patients SET ${['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'complement', 'notes'].map(k => k + '=?').join(',')}, archive_le=? WHERE id=?`,
-      ...['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'complement', 'notes'].map(k => fin[k]), archive, idA);
+    run(`UPDATE patients SET ${['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'complement', 'notes', 'provenance'].map(k => k + '=?').join(',')}, archive_le=? WHERE id=?`,
+      ...['civilite', 'prenom', 'nom', 'date_naissance', 'type', 'statut', 'email', 'telephone', 'contact', 'complement', 'notes', 'provenance'].map(k => fin[k]), archive, idA);
     if (crFin !== A.compte_rendu) { garderVersionCR(A, crFin, 'avant-fusion', true); run(`UPDATE patients SET compte_rendu=?, compte_rendu_maj=datetime('now') WHERE id=?`, crFin, idA); }
     run('DELETE FROM patients WHERE id=?', idB);
   });
@@ -557,7 +574,7 @@ route('POST', '/api/patients/:id/fusion', ({ m, body }) => {
 });
 
 route('POST', '/api/patients', ({ body }) => {
-  const b = identite({ type: 'adulte', statut: 'suivi en cours', contact: '', email: '', telephone: '', notes: '', civilite: '', prenom: '', complement: '', date_naissance: null, ...body });
+  const b = identite({ type: 'adulte', statut: 'suivi en cours', contact: '', email: '', telephone: '', notes: '', civilite: '', prenom: '', complement: '', provenance: '', date_naissance: null, ...body });
   b.nom = String(b.nom_famille ?? b.nom ?? '').trim();
   if (!b.nom) throw httpErr(400, 'Nom requis');
   b.prenom = String(b.prenom || '').trim();
@@ -984,6 +1001,40 @@ route('DELETE', '/api/ressources/:id', ({ m }) => {
 });
 
 
+// ---------- Provenances des patients (liste modifiable) ----------
+route('GET', '/api/provenances', () =>
+  all(`SELECT v.id, v.nom, (SELECT COUNT(*) FROM patients p WHERE p.provenance=v.nom COLLATE NOCASE) AS nb FROM provenances v ORDER BY v.nom COLLATE NOCASE`));
+const nomProv = b => { const n = String(b.nom || '').trim().slice(0, 80); if (!n) throw httpErr(400, 'Nom requis'); return n; };
+route('POST', '/api/provenances', ({ body }) => {
+  const nom = nomProv(body);
+  if (get('SELECT 1 FROM provenances WHERE nom=?', nom)) throw httpErr(409, 'Cette source existe déjà');
+  return get('SELECT id, nom FROM provenances WHERE id=?', run('INSERT INTO provenances (nom) VALUES (?)', nom).lastInsertRowid);
+});
+route('PUT', '/api/provenances/:id', ({ m, body }) => {
+  const cur = get('SELECT * FROM provenances WHERE id=?', m[1]);
+  if (!cur) throw httpErr(404, 'Source introuvable');
+  const nom = nomProv(body);
+  if (get('SELECT 1 FROM provenances WHERE nom=? AND id<>?', nom, m[1])) throw httpErr(409, 'Cette source existe déjà');
+  db.exec('BEGIN');
+  try {
+    run('UPDATE provenances SET nom=? WHERE id=?', nom, m[1]);
+    run('UPDATE patients SET provenance=? WHERE provenance=? COLLATE NOCASE', nom, cur.nom);     // les fiches suivent le nouveau nom
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return { id: Number(m[1]), nom };
+});
+route('DELETE', '/api/provenances/:id', ({ m }) => {
+  const cur = get('SELECT * FROM provenances WHERE id=?', m[1]);
+  if (!cur) throw httpErr(404, 'Source introuvable');
+  db.exec('BEGIN');
+  try {
+    run(`UPDATE patients SET provenance='' WHERE provenance=? COLLATE NOCASE`, cur.nom);        // les fiches repassent à « non renseignée »
+    run('DELETE FROM provenances WHERE id=?', m[1]);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return { ok: true };
+});
+
 // ---------- Professionnels et réunions ----------
 const FORMATS_REUNION = ['téléphone', 'e-mail', 'visio', 'présentiel', 'autre'];
 const STATUTS_REUNION = ['planifiée', 'réalisée', 'annulée'];
@@ -1322,7 +1373,7 @@ const sortie = (format, nom, entetes, lignes, titre, blocs) => {
 const oui = b => b ? 'Oui' : 'Non';
 
 // Colonnes : [clé d'option | null (toujours), en-tête]. Les colonnes dont l'option est décochée disparaissent du CSV.
-const COL_PATIENT = [[null, 'Patient n°'], ['infos', 'Civilité'], ['infos', 'Nom'], ['infos', 'Prénom'], ['infos', 'Date de naissance'], ['infos', 'Âge'], [null, 'Type'], [null, 'Statut'], [null, 'Archivé le'],
+const COL_PATIENT = [[null, 'Patient n°'], ['infos', 'Civilité'], ['infos', 'Nom'], ['infos', 'Prénom'], ['infos', 'Date de naissance'], ['infos', 'Âge'], [null, 'Type'], [null, 'Statut'], [null, 'Archivé le'], [null, 'Provenance'],
   ['infos', 'Téléphone'], ['infos', 'E-mail'], ['infos', 'Autres coordonnées'], ['infos', 'Notes pratiques'], ['notes', 'Compte-rendu'], ['liens', 'Parents / responsables'], ['liens', 'Enfants / ados']];
 const COL_SEANCE = [[null, 'Séance n°'], [null, 'Date'], [null, 'Heure'], [null, 'Durée (min)'], [null, 'Mode'], [null, 'Statut de la séance'], ['finances', 'Tarif (€)'], ['finances', 'Payée'], ['finances', 'Mode de paiement'], ['finances', 'Facturé à'],
   [null, 'Personnes présentes'], ['notes', 'Contenu de la séance']];
@@ -1330,7 +1381,7 @@ const gardees = (cols, o) => cols.map(([k]) => !k || o.inclure.has(k));
 const garder = (vals, garde) => vals.filter((_, i) => garde[i]);
 const enTetes = (cols, o) => garder(cols.map(c => c[1]), gardees(cols, o));
 const valsSeance = (c, anon = false) => [c.id, c.date, c.heure, c.duree, c.mode, c.statut, c.tarif, oui(c.paye), c.mode_paiement || '', anon ? (c.facture_a ? 'un tiers' : '') : c.facture_a || '', presentsTxt(c, anon), X.texteBrut(c.contenu)];
-const valsIdentite = (p, anon = false) => [p.id, p.civilite === 'M' ? 'M.' : p.civilite, p.nom_famille, p.prenom, p.date_naissance || '', p.age_texte || '', p.type, p.statut, p.archive_le || '', p.telephone, p.email, p.contact, p.notes, X.texteBrut(p.compte_rendu || ''),
+const valsIdentite = (p, anon = false) => [p.id, p.civilite === 'M' ? 'M.' : p.civilite, p.nom_famille, p.prenom, p.date_naissance || '', p.age_texte || '', p.type, p.statut, p.archive_le || '', p.provenance || '', p.telephone, p.email, p.contact, p.notes, X.texteBrut(p.compte_rendu || ''),
   (p.liens || []).filter(l => l.sens === 'parent').map(l => anon ? l.role : `${l.autre_nom} (${l.role})`).join(', '), (p.liens || []).filter(l => l.sens === 'enfant').map(l => anon ? `enfant / ado (${l.role})` : `${l.autre_nom} (${l.role})`).join(', ')];
 const resumeSeance = (c, o) => [c.mode, c.duree ? c.duree + ' min' : '', c.statut,
   ...(o.inclure.has('finances') ? [c.tarif ? `${c.tarif} €` : '', c.paye ? 'payée' + (c.mode_paiement ? ' (' + c.mode_paiement + ')' : '') : (c.statut === 'réalisée' ? 'à régler' : '')] : []),
@@ -1688,6 +1739,7 @@ const DOC_TABLES = {
   liens: 'Liens familiaux : patient_id = l’enfant / l’ado, proche_id = le parent / responsable, role = nature du lien.',
   ressources: 'Liens web joints à un patient (consultation_id vide) ou à une séance.',
   modeles: 'Modèles de page de séance (contenu en HTML).',
+  provenances: 'Liste des sources possibles pour « provenance » d’un patient (Site web, Doctolib, Google…), modifiable.',
   professionnels: 'Annuaire des professionnels avec qui la psychologue échange (orientation, coordination). Catégories dans pro_categories.',
   categories_pro: 'Liste des catégories de professionnels (modifiable).',
   pro_categories: 'Liens professionnel ↔ catégorie (un professionnel peut avoir plusieurs catégories).',
@@ -1705,7 +1757,7 @@ const DOC_TABLES = {
 const DOC_COLS = {
   'patients.nom': 'nom de famille', 'patients.prenom': 'prénom', 'patients.civilite': 'M, Mme ou vide', 'patients.date_naissance': 'AAAA-MM-JJ',
   'patients.type': 'adulte ou mineur', 'patients.statut': 'suivi en cours, en pause, terminé ou proche', 'patients.archive_le': 'date d’archivage (vide = actif)',
-  'patients.complement': 'précision pour distinguer des homonymes', 'patients.contact': 'autres coordonnées (texte libre)', 'patients.notes': 'notes pratiques', 'patients.compte_rendu': 'compte-rendu du patient (texte riche en HTML), mis à jour au fil du suivi', 'patients.compte_rendu_maj': 'date et heure (UTC) de la dernière mise à jour du compte-rendu',
+  'patients.complement': 'précision pour distinguer des homonymes', 'patients.contact': 'autres coordonnées (texte libre)', 'patients.notes': 'notes pratiques', 'patients.provenance': 'comment le patient est arrivé au cabinet (nom d’une source de la table provenances)', 'patients.compte_rendu': 'compte-rendu du patient (texte riche en HTML), mis à jour au fil du suivi', 'patients.compte_rendu_maj': 'date et heure (UTC) de la dernière mise à jour du compte-rendu',
   'consultations.patient_id': 'renvoie à patients.id', 'consultations.date': 'AAAA-MM-JJ', 'consultations.heure': 'HH:MM', 'consultations.duree': 'minutes',
   'consultations.mode': 'cabinet, visio, téléphone ou domicile', 'consultations.statut': 'planifiée, réalisée, absence ou annulée', 'consultations.tarif': 'euros',
   'consultations.paye': '0 = non, 1 = oui', 'consultations.mode_paiement': 'chèque, espèces, virement ou CB', 'consultations.facture_a': 'nom de la personne facturée',
@@ -1765,6 +1817,7 @@ route('GET', '/api/export/complet', () => {
     consultations: all('SELECT * FROM consultations ORDER BY id').map(c => ({ ...c, presents: JSON.parse(c.presents || '[]') })),
     historique_notes: all('SELECT * FROM consultation_versions ORDER BY id'),
     historique_comptes_rendus: all('SELECT * FROM patient_cr_versions ORDER BY id'),
+    provenances: all('SELECT * FROM provenances ORDER BY id'),
     professionnels: all('SELECT * FROM professionnels ORDER BY id'), categories_pro: all('SELECT * FROM categories_pro ORDER BY id'),
     pro_categories: all('SELECT * FROM pro_categories'), reunions: all('SELECT * FROM reunions ORDER BY id'),
     reunion_pros: all('SELECT * FROM reunion_pros'), historique_reunions: all('SELECT * FROM reunion_versions ORDER BY id'),

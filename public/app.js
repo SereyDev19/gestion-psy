@@ -619,8 +619,9 @@ async function viewPatients() {
   draw();
 }
 
-function patientModal(p) {
-  const v = p || { nom_famille: '', prenom: '', civilite: '', date_naissance: '', type: 'adulte', statut: 'suivi en cours', contact: '', email: '', telephone: '', complement: '' };
+async function patientModal(p) {
+  const SOURCES = await api('GET', '/api/provenances');
+  const v = p || { nom_famille: '', prenom: '', civilite: '', date_naissance: '', type: 'adulte', statut: 'suivi en cours', contact: '', email: '', telephone: '', complement: '', provenance: '' };
   modal(p ? 'Modifier le patient' : 'Nouveau patient', `
     <div id="dblbox"></div>
     <div class="fields id3">
@@ -637,6 +638,12 @@ function patientModal(p) {
       <div class="field"><label>Type</label><select name="type"><option value="adulte" ${v.type === 'adulte' ? 'selected' : ''}>Adulte</option><option value="mineur" ${v.type === 'mineur' ? 'selected' : ''}>Mineur</option></select></div>
       <div class="field"><label>Statut</label><select name="statut">${STATUTS_PATIENT.map(s => `<option value="${s}" ${s === v.statut ? 'selected' : ''}>${esc(STATUT_LABEL[s] || s)}</option>`).join('')}</select></div>
     </div>
+    <div class="field"><label>Provenance <span class="muted tiny">(comment cette personne est arrivée au cabinet)</span></label>
+      <select name="provenance" id="provsel"><option value="">Non renseignée</option>
+        ${SOURCES.map(s => `<option value="${esc(s.nom)}" ${s.nom.toLowerCase() === String(v.provenance || '').toLowerCase() ? 'selected' : ''}>${esc(s.nom)}</option>`).join('')}
+        ${v.provenance && !SOURCES.some(s => s.nom.toLowerCase() === v.provenance.toLowerCase()) ? `<option value="${esc(v.provenance)}" selected>${esc(v.provenance)}</option>` : ''}
+        <option value="__nouvelle__">+ Ajouter une autre source…</option></select>
+      <input id="provnew" name="provenance_nouvelle" maxlength="80" placeholder="Nom de la nouvelle source" style="margin-top:8px" hidden></div>
     <div class="fields">
       <div class="field"><label>Téléphone</label><input name="telephone" type="tel" autocomplete="off" value="${esc(v.telephone)}"></div>
       <div class="field"><label>E-mail</label><input name="email" type="email" autocomplete="off" value="${esc(v.email)}"></div>
@@ -645,6 +652,11 @@ function patientModal(p) {
     <div class="field"><label>Autres coordonnées <span class="muted tiny">(adresse, précisions…)</span></label><input name="contact" value="${esc(v.contact)}"></div>`,
     async fd => {
       const body = Object.fromEntries(fd);
+      if (body.provenance === '__nouvelle__') {                    // ajout d'une source : le nom saisi devient la provenance (et rejoint la liste)
+        body.provenance = String(body.provenance_nouvelle || '').trim();
+        if (!body.provenance) { toast('Saisissez le nom de la nouvelle source, ou choisissez-en une dans la liste'); $('#provnew').focus(); throw new Error('provenance'); }
+      }
+      delete body.provenance_nouvelle;
       await dbl.maintenant();                         // dernière vérification avec ce qui est réellement saisi
       if (!dbl.pret()) throw new Error('doublon');
       if (dbl.aDesCandidats()) body.confirme_doublon = true;
@@ -659,6 +671,7 @@ function patientModal(p) {
     }, 'Enregistrer', false, 'wide');
   const champ = n => $(`[name=${n}]`);
   imposerFormats($('.modal'));
+  $('#provsel').addEventListener('change', e => { const n = e.target.value === '__nouvelle__'; $('#provnew').hidden = !n; if (n) $('#provnew').focus(); });
   const dbl = doublonsBox($('#dblbox'), { exclureId: p ? p.id : 0,
     payload: () => ({ nom_famille: champ('nom_famille').value, prenom: champ('prenom').value, date_naissance: champ('date_naissance').value, telephone: champ('telephone').value, email: champ('email').value }) });
   ['nom_famille', 'prenom', 'date_naissance', 'telephone', 'email'].forEach(n => champ(n).addEventListener('input', () => dbl.planifier()));
@@ -716,6 +729,7 @@ async function viewPatient(m) {
           <div class="field"><label>E-mail</label>${p.email ? `<a href="mailto:${esc(p.email)}">${esc(p.email)}</a>` : '<span class="muted">—</span>'}</div>
           ${p.contact ? `<div class="field"><label>Autres coordonnées</label>${esc(p.contact)}</div>` : ''}
           ${p.complement ? `<div class="field"><label>Précision</label>${esc(p.complement)}</div>` : ''}
+          <div class="field"><label>Provenance</label>${p.provenance ? esc(p.provenance) : '<span class="muted">Non renseignée</span>'}</div>
           <div class="field"><label>Civilité</label>${p.civilite ? esc(p.civilite === 'M' ? 'M.' : 'Mme') : '<span class="muted">Non renseignée</span>'}</div>
           <div class="field"><label>Naissance</label>${p.date_naissance ? `${fmtDate(p.date_naissance)} · ${esc(p.age_texte)}` : '<span class="muted">Non renseignée</span>'}</div>
           <div class="field"><label>Notes pratiques</label><textarea id="pnotes" rows="4" placeholder="Disponibilités, préférences de contact…">${esc(p.notes)}</textarea></div>
@@ -776,7 +790,7 @@ async function viewPatient(m) {
 function fusionModal(a, b) {
   const CH = [['nom', 'Nom', x => x.nom_famille], ['prenom', 'Prénom', x => x.prenom], ['civilite', 'Civilité', x => x.civilite === 'M' ? 'M.' : x.civilite],
     ['date_naissance', 'Naissance', x => x.date_naissance && fmtDate(x.date_naissance)], ['type', 'Type', x => x.type], ['statut', 'Statut', x => STATUT_LABEL[x.statut] || x.statut],
-    ['telephone', 'Téléphone', x => x.telephone], ['email', 'E-mail', x => x.email], ['contact', 'Autres coordonnées', x => x.contact], ['complement', 'Précision', x => x.complement]];
+    ['telephone', 'Téléphone', x => x.telephone], ['email', 'E-mail', x => x.email], ['contact', 'Autres coordonnées', x => x.contact], ['complement', 'Précision', x => x.complement], ['provenance', 'Provenance', x => x.provenance]];
   const vide = v => v === null || v === undefined || String(v).trim() === '';
   const raw = (k, x) => k === 'nom' ? x.nom_famille : x[k];
   // Un choix n'est demandé que si les deux fiches ont une valeur différente (sinon on garde la valeur renseignée). Statut : « proche » cède toujours la place.
@@ -813,7 +827,7 @@ function afficherCle(cle) {
     <label class="check"><input type="checkbox" required> J’ai noté cette clé en lieu sûr</label>`, async () => {}, 'C’est noté');
 }
 async function viewParametres() {
-  const [P, MAJ, SV, CATS] = await Promise.all([api('GET', '/api/parametres'), api('GET', '/api/mise-a-jour'), api('GET', '/api/sauvegardes'), api('GET', '/api/categories-pro')]);
+  const [P, MAJ, SV, CATS, PROVS] = await Promise.all([api('GET', '/api/parametres'), api('GET', '/api/mise-a-jour'), api('GET', '/api/sauvegardes'), api('GET', '/api/categories-pro'), api('GET', '/api/provenances')]);
   auth.protege = P.protege; auth.delai = P.delai_min; majBoutonVerrou();
   const mdpChamps = (actuel, nouveau) => `${actuel ? '<div class="field"><label>Mot de passe actuel</label><input type="password" name="actuel" autocomplete="current-password" required></div>' : ''}
     ${nouveau ? `<div class="field"><label>Nouveau mot de passe <span class="muted tiny">(8 caractères minimum)</span></label><input type="password" name="mdp" minlength="8" autocomplete="new-password" required></div>
@@ -823,6 +837,7 @@ async function viewParametres() {
       <p class="muted tiny" style="margin-top:0">Affiché à côté du logo et dans le titre de la fenêtre.</p>
       <form id="nomform" class="inl"><input id="nomcab" maxlength="40" value="${esc(P.nom_cabinet)}" aria-label="Nom de l’application"><button class="btn primary">Enregistrer</button>
         ${P.nom_cabinet !== P.nom_defaut ? '<button type="button" class="btn" id="nomdef">Valeur d’origine</button>' : ''}</form></div>
+    ${provenancesCardHtml(PROVS)}
     ${categoriesCardHtml(CATS)}
     <div class="card pcard"><h2>Mot de passe</h2>
       ${P.protege ? `<p style="margin-top:0">🔒 L’accès à l’application est protégé par un mot de passe.</p>
@@ -894,6 +909,7 @@ async function viewParametres() {
     } catch (e) { $('#dirmsg').textContent = (e && e.message) || 'Changement impossible.'; }
     b.disabled = false;
   };
+  brancherProvenances(PROVS);
   brancherCategories(CATS);
   $('#aff-taille').onchange = e => GP.regler('taille', e.target.value);
   $('#aff-theme').onchange = e => GP.regler('theme', e.target.value);

@@ -416,3 +416,4 @@ a.tile:hover { border-color: var(--line2); }
 .catbtn { display: flex; gap: 6px; }
 @media (max-width: 760px) { .pros .row, .reunions .row { grid-template-columns: 1fr; gap: 4px; } .catrow { grid-template-columns: 1fr auto; } .catrow > .muted { display: none; } }
 .mp-chips[hidden], .mp-dd[hidden] { display: none; }
+#provnew[hidden] { display: none; }

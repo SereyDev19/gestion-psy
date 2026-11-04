@@ -346,25 +346,40 @@ function accueilReunionsHtml(A) {
     ${pr.length ? `<div class="muted tiny" style="margin:${aj.length ? 12 : -2}px 0 4px">À venir</div><div class="hrows">${pr.map(r => ligne(r, true)).join('')}</div>` : ''}</div>`;
 }
 
-// ---------- Paramètres : catégories de professionnels ----------
-const categoriesCardHtml = cats => `<div class="card pcard" id="catcard"><h2>Catégories de professionnels</h2>
-  <p class="muted tiny" style="margin-top:0">La liste proposée dans la fiche d’un professionnel. Renommer une catégorie la change sur toutes les fiches ; la supprimer la retire des fiches (les fiches ne sont pas supprimées).</p>
-  <div class="catlist">${cats.map(c => `<div class="catrow" data-id="${c.id}"><span>${esc(c.nom)}</span><span class="muted tiny">${c.nb ? c.nb + ' fiche' + (c.nb > 1 ? 's' : '') : 'inutilisée'}</span>
+// ---------- Paramètres : listes modifiables (catégories de professionnels, provenances des patients) ----------
+const LISTES_ED = {
+  cat: { k: 'cat', card: 'catcard', api: '/api/categories-pro', titre: 'Catégories de professionnels', unite: 'fiche', nouveau: 'Nouvelle catégorie…',
+    aide: 'La liste proposée dans la fiche d’un professionnel. Renommer une catégorie la change sur toutes les fiches ; la supprimer la retire des fiches (les fiches ne sont pas supprimées).',
+    renTitre: 'Renommer la catégorie', ajoutee: 'Catégorie ajoutée', renommee: 'Catégorie renommée', supprimee: 'Catégorie supprimée', supTitre: 'Supprimer la catégorie ?',
+    supTexte: (c, n) => `retirée ${n ? `des ${n} fiche${n > 1 ? 's' : ''} qui l’utilisent` : 'de la liste'}. Les fiches elles-mêmes ne sont pas supprimées.` },
+  prov: { k: 'prov', card: 'provcard', api: '/api/provenances', titre: 'Provenance des patients', unite: 'patient', nouveau: 'Nouvelle source…',
+    aide: 'Les choix proposés dans le champ « Provenance » d’une fiche patient (comment la personne est arrivée au cabinet). Renommer une source la change sur toutes les fiches ; la supprimer remet « non renseignée » sur les fiches concernées.',
+    renTitre: 'Renommer la source', ajoutee: 'Source ajoutée', renommee: 'Source renommée', supprimee: 'Source supprimée', supTitre: 'Supprimer la source ?',
+    supTexte: (c, n) => `retirée de la liste${n ? ` ; ${n} fiche${n > 1 ? 's' : ''} ${n > 1 ? 'repasseront' : 'repassera'} à « non renseignée »` : ''}. Aucun patient n’est supprimé.` },
+};
+const listeEdCard = (cfg, items) => `<div class="card pcard" id="${cfg.card}"><h2>${cfg.titre}</h2>
+  <p class="muted tiny" style="margin-top:0">${cfg.aide}</p>
+  <div class="catlist">${items.map(c => `<div class="catrow" data-id="${c.id}"><span>${esc(c.nom)}</span><span class="muted tiny">${c.nb ? c.nb + ' ' + cfg.unite + (c.nb > 1 ? 's' : '') : 'inutilisée'}</span>
     <span class="catbtn"><button class="btn small" data-ren="${c.id}">Renommer</button><button class="btn small danger" data-sup="${c.id}">Supprimer</button></span></div>`).join('')}</div>
-  <form class="inl" id="catnew" style="margin-top:12px"><input id="catnom" maxlength="60" placeholder="Nouvelle catégorie…" aria-label="Nouvelle catégorie"><button class="btn primary">Ajouter</button></form></div>`;
-function brancherCategories(cats) {
-  $('#catnew').onsubmit = async e => {
-    e.preventDefault(); const nom = $('#catnom').value.trim(); if (!nom) return;
-    try { await api('POST', '/api/categories-pro', { nom }); toast('Catégorie ajoutée'); render(); } catch { /* message affiché */ }
+  <form class="inl" id="${cfg.k}new" style="margin-top:12px"><input id="${cfg.k}nom" maxlength="80" placeholder="${cfg.nouveau}" aria-label="${cfg.nouveau}"><button class="btn primary">Ajouter</button></form></div>`;
+function brancherListeEd(cfg, items) {
+  const racine = $('#' + cfg.card);
+  $('#' + cfg.k + 'new').onsubmit = async e => {
+    e.preventDefault(); const nom = $('#' + cfg.k + 'nom').value.trim(); if (!nom) return;
+    try { await api('POST', cfg.api, { nom }); toast(cfg.ajoutee); render(); } catch { /* message affiché */ }
   };
-  document.querySelectorAll('[data-ren]').forEach(b => b.onclick = () => {
-    const c = cats.find(x => String(x.id) === b.dataset.ren);
-    modal('Renommer la catégorie', `<div class="field"><label>Nom</label><input name="nom" required maxlength="60" value="${esc(c.nom)}"></div>`,
-      async fd => { await api('PUT', '/api/categories-pro/' + c.id, { nom: fd.get('nom') }); toast('Catégorie renommée'); render(); });
+  racine.querySelectorAll('[data-ren]').forEach(b => b.onclick = () => {
+    const c = items.find(x => String(x.id) === b.dataset.ren);
+    modal(cfg.renTitre, `<div class="field"><label>Nom</label><input name="nom" required maxlength="80" value="${esc(c.nom)}"></div>`,
+      async fd => { await api('PUT', cfg.api + '/' + c.id, { nom: fd.get('nom') }); toast(cfg.renommee); render(); });
   });
-  document.querySelectorAll('[data-sup]').forEach(b => b.onclick = () => {
-    const c = cats.find(x => String(x.id) === b.dataset.sup);
-    modal('Supprimer la catégorie ?', `<p style="margin-top:0"><b>${esc(c.nom)}</b> sera retirée ${c.nb ? `des ${c.nb} fiche${c.nb > 1 ? 's' : ''} qui l’utilisent` : 'de la liste'}. Les fiches elles-mêmes ne sont pas supprimées.</p>`,
-      async () => { await api('DELETE', '/api/categories-pro/' + c.id); toast('Catégorie supprimée'); render(); }, 'Supprimer', true);
+  racine.querySelectorAll('[data-sup]').forEach(b => b.onclick = () => {
+    const c = items.find(x => String(x.id) === b.dataset.sup);
+    modal(cfg.supTitre, `<p style="margin-top:0"><b>${esc(c.nom)}</b> sera ${cfg.supTexte(c, c.nb)}</p>`,
+      async () => { await api('DELETE', cfg.api + '/' + c.id); toast(cfg.supprimee); render(); }, 'Supprimer', true);
   });
 }
+const categoriesCardHtml = cats => listeEdCard(LISTES_ED.cat, cats);
+const brancherCategories = cats => brancherListeEd(LISTES_ED.cat, cats);
+const provenancesCardHtml = l => listeEdCard(LISTES_ED.prov, l);
+const brancherProvenances = l => brancherListeEd(LISTES_ED.prov, l);
